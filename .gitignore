@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.*
+.temp/
 service-account*.json
 supabase/.env
 supabase/.temp/

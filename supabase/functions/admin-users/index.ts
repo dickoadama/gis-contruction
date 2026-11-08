@@ -8,7 +8,6 @@ const corsHeaders = {
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL');
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-const bootstrapToken = Deno.env.get('GIS_BOOTSTRAP_TOKEN');
 
 if (!supabaseUrl || !serviceRoleKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured.');
@@ -51,17 +50,6 @@ class RequestError extends Error {
   }
 }
 
-function constantTimeEqual(left: string, right: string) {
-  const leftBytes = new TextEncoder().encode(left);
-  const rightBytes = new TextEncoder().encode(right);
-  let mismatch = leftBytes.length ^ rightBytes.length;
-  const length = Math.max(leftBytes.length, rightBytes.length);
-  for (let index = 0; index < length; index++) {
-    mismatch |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
-  }
-  return mismatch === 0;
-}
-
 function normalizeRole(role: string) {
   const shortRole = role.replace(/^ROLE_/, '');
   if (['admin', 'utilisateur', 'tresorier', 'gestionnaire_stock', 'commerciale'].includes(shortRole)) {
@@ -72,6 +60,28 @@ function normalizeRole(role: string) {
 
 function roleId(role: string) {
   return role.startsWith('ROLE_') ? role : `ROLE_${role}`;
+}
+
+function getInvitationRedirect(redirectTo: unknown, origin: string | null) {
+  if (!origin || typeof redirectTo !== 'string') {
+    throw new RequestError(400, 'Adresse de retour de l’invitation invalide.');
+  }
+  try {
+    const requestOrigin = new URL(origin);
+    const redirectUrl = new URL(redirectTo);
+    const isLocalHttp = requestOrigin.protocol === 'http:'
+      && ['localhost', '127.0.0.1'].includes(requestOrigin.hostname);
+    if (
+      redirectUrl.origin !== requestOrigin.origin
+      || (requestOrigin.protocol !== 'https:' && !isLocalHttp)
+    ) {
+      throw new RequestError(400, 'Adresse de retour de l’invitation non autorisée.');
+    }
+    return redirectUrl.toString();
+  } catch (error) {
+    if (error instanceof RequestError) throw error;
+    throw new RequestError(400, 'Adresse de retour de l’invitation invalide.');
+  }
 }
 
 async function getCaller(request: Request) {
@@ -106,77 +116,7 @@ async function requireRoleExists(role: string) {
   if (!data) throw new RequestError(400, 'Rôle introuvable.');
 }
 
-async function bootstrapAdmin(data: Record<string, unknown>) {
-  if (!bootstrapToken) throw new RequestError(503, 'Le secret GIS_BOOTSTRAP_TOKEN n’est pas configuré.');
-  const supplied = String(data.setupToken || '');
-  if (!constantTimeEqual(supplied, bootstrapToken)) {
-    throw new RequestError(403, 'Jeton de configuration invalide.');
-  }
-  const profile = requireProfile(data);
-  const password = String(data.password || '');
-  if (password.length < 12 || password.length > 128) {
-    throw new RequestError(400, 'Le mot de passe doit comporter entre 12 et 128 caractères.');
-  }
-
-  const { error: lockError } = await adminClient
-    .from('bootstrap_lock')
-    .insert({ singleton: true, reserved_email: profile.email, completed: false });
-  if (lockError) {
-    if (lockError.code === '23505') {
-      throw new RequestError(409, 'Le compte administrateur initial a déjà été configuré.');
-    }
-    throw lockError;
-  }
-
-  let createdUserId: string | null = null;
-  try {
-    const { count, error: countError } = await adminClient
-      .from('profiles')
-      .select('id', { count: 'exact', head: true });
-    if (countError) throw countError;
-    if (count !== 0) throw new RequestError(409, 'La base contient déjà des utilisateurs.');
-
-    const { data: created, error: createError } = await adminClient.auth.admin.createUser({
-      email: profile.email,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        prenom: profile.prenom,
-        nom: profile.nom,
-        username: profile.username
-      }
-    });
-    if (createError) throw createError;
-    createdUserId = created.user.id;
-
-    const { data: savedProfile, error: saveError } = await adminClient
-      .from('profiles')
-      .update({ role: 'superadmin', actif: true, telephone: profile.telephone })
-      .eq('id', createdUserId)
-      .select('*')
-      .single();
-    if (saveError) throw saveError;
-    const { error: completeError } = await adminClient
-      .from('bootstrap_lock')
-      .update({ completed: true })
-      .eq('singleton', true);
-    if (completeError) throw completeError;
-    return { user: savedProfile };
-  } catch (error) {
-    if (createdUserId) {
-      const { error: deleteError } = await adminClient.auth.admin.deleteUser(createdUserId);
-      if (deleteError) console.error('Bootstrap cleanup failed:', deleteError);
-    }
-    const { error: unlockError } = await adminClient
-      .from('bootstrap_lock')
-      .delete()
-      .eq('singleton', true);
-    if (unlockError) console.error('Bootstrap lock cleanup failed:', unlockError);
-    throw error;
-  }
-}
-
-async function createUser(data: Record<string, unknown>, callerRole: string) {
+async function createUser(data: Record<string, unknown>, callerRole: string, origin: string | null) {
   requireAdmin(callerRole);
   const profile = requireProfile(data);
   const requestedRole = String(data.role || 'utilisateur');
@@ -187,19 +127,17 @@ async function createUser(data: Record<string, unknown>, callerRole: string) {
   }
   await requireRoleExists(role);
 
-  const temporaryPassword = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-    .map(byte => byte.toString(16).padStart(2, '0')).join('');
-  const { data: created, error: createError } = await adminClient.auth.admin.createUser({
-    email: profile.email,
-    password: temporaryPassword,
-    email_confirm: true,
-    user_metadata: {
+  const redirectTo = getInvitationRedirect(data.redirectTo, origin);
+  const { data: invited, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(profile.email, {
+    redirectTo,
+    data: {
       prenom: profile.prenom,
       nom: profile.nom,
       username: profile.username
     }
   });
-  if (createError) throw createError;
+  if (inviteError) throw inviteError;
+  if (!invited.user) throw new Error('Supabase n’a pas retourné le compte invité.');
 
   const { data: savedProfile, error: saveError } = await adminClient
     .from('profiles')
@@ -208,12 +146,12 @@ async function createUser(data: Record<string, unknown>, callerRole: string) {
       role,
       actif: true
     })
-    .eq('id', created.user.id)
+    .eq('id', invited.user.id)
     .select('*')
     .single();
   if (saveError) {
-    const { error: deleteError } = await adminClient.auth.admin.deleteUser(created.user.id);
-    if (deleteError) console.error('User creation cleanup failed:', deleteError);
+    const { error: deleteError } = await adminClient.auth.admin.deleteUser(invited.user.id);
+    if (deleteError) console.error('Invitation cleanup failed:', deleteError);
     throw saveError;
   }
   return { user: savedProfile };
@@ -375,12 +313,10 @@ Deno.serve(async request => {
     const body = await request.json() as Record<string, unknown>;
     const action = String(body.action || '');
 
-    if (action === 'bootstrap_admin') return respond(await bootstrapAdmin(body));
-
     const { authUser, profile } = await getCaller(request);
     switch (action) {
-      case 'create_user':
-        return respond(await createUser(body, profile.role));
+      case 'invite_user':
+        return respond(await createUser(body, profile.role, request.headers.get('origin')));
       case 'update_user':
         return respond(await updateUser(body, authUser.id, profile.role));
       case 'set_user_active':

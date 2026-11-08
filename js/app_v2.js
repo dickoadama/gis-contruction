@@ -49,9 +49,30 @@ const App = {
       this.showToast('Connexion Supabase indisponible. Vérifiez votre réseau puis réessayez.', 'error');
       return;
     }
-    if (!Auth.isLoggedIn()) { this.showLogin(); this.updateSyncHint(); return; }
+    if (!Auth.isLoggedIn()) {
+      this.showLogin();
+      this.updateSyncHint();
+      if (Auth._invitationPending) {
+        document.getElementById('login-error').textContent = 'Ce lien d’invitation est invalide ou expiré. Demandez une nouvelle invitation.';
+      } else {
+        try {
+          const signupOpen = await Auth.isInitialSuperAdminSignupOpen();
+          document.getElementById('first-admin-link').style.display = signupOpen ? 'block' : 'none';
+        } catch (error) {
+          console.error('[GIS] Checking initial SuperAdmin signup failed:', error);
+          document.getElementById('login-error').textContent =
+            'Impossible de vérifier la première inscription. Appliquez la migration 20261108214000_first_signup_superadmin.sql dans Supabase.';
+        }
+      }
+      return;
+    }
+    if (Auth._invitationPending) {
+      this.showLogin();
+      this.showLoginTab('invitation');
+      return;
+    }
     this.showApp();
-    this.navigate(this.currentPage);
+    this.navigateToDefaultPage();
     this.startCloudSync();
   },
 
@@ -62,8 +83,9 @@ const App = {
         initializeDB();
       }
       this.updateSyncHint();
-      if (Auth.isLoggedIn() && this.currentPage && Auth.hasPage(this.currentPage)) {
-        this.navigate(this.currentPage);
+      if (Auth.isLoggedIn()) {
+        this.buildSidebar();
+        this.navigateToDefaultPage();
       }
     });
   },
@@ -113,29 +135,29 @@ const App = {
   },
 
   showLoginTab(tab) {
+    document.querySelector('.login-card')?.classList.toggle('register-active', tab === 'first-admin');
     document.getElementById('form-login').style.display = 'none';
-    document.getElementById('form-register').style.display = 'none';
+    document.getElementById('form-invitation').style.display = 'none';
     document.getElementById('form-forgot').style.display = 'none';
-    document.getElementById('form-bootstrap').style.display = 'none';
+    document.getElementById('form-first-admin').style.display = 'none';
 
     document.getElementById('tab-login').style.color = '#888';
     document.getElementById('tab-login').style.borderBottomColor = 'transparent';
-    document.getElementById('tab-register').style.color = '#888';
-    document.getElementById('tab-register').style.borderBottomColor = 'transparent';
+    const isPrivateForm = tab === 'invitation' || tab === 'first-admin';
+    document.getElementById('login-tabs').style.display = isPrivateForm ? 'none' : 'flex';
+    document.getElementById('login-hints').style.display = isPrivateForm ? 'none' : '';
 
     if (tab === 'login') {
       document.getElementById('form-login').style.display = 'block';
       document.getElementById('tab-login').style.color = '#6C63FF';
       document.getElementById('tab-login').style.borderBottomColor = '#6C63FF';
-    } else if (tab === 'register') {
-      document.getElementById('form-register').style.display = 'block';
-      document.getElementById('tab-register').style.color = '#6C63FF';
-      document.getElementById('tab-register').style.borderBottomColor = '#6C63FF';
+    } else if (tab === 'invitation') {
+      document.getElementById('form-invitation').style.display = 'block';
     } else if (tab === 'forgot') {
       document.getElementById('form-forgot').style.display = 'block';
       // keep both tabs inactive visually
-    } else if (tab === 'bootstrap') {
-      document.getElementById('form-bootstrap').style.display = 'block';
+    } else if (tab === 'first-admin') {
+      document.getElementById('form-first-admin').style.display = 'block';
     }
   },
 
@@ -145,6 +167,15 @@ const App = {
     this.buildSidebar();
     this.updateBadges();
     if (!this._badgeTimer) this._badgeTimer = setInterval(() => this.updateBadges(), 30000);
+  },
+
+  navigateToDefaultPage() {
+    const page = Auth.canOpenPage(this.currentPage)
+      ? this.currentPage
+      : Auth.canOpenPage('dashboard')
+        ? 'dashboard'
+        : Auth.getNavItems()[0]?.page;
+    if (page) this.navigate(page);
   },
 
   // Petit alias de permission (utilisé par le FAB dans index.html)
@@ -170,62 +201,83 @@ const App = {
     const email = document.getElementById('login-username').value.trim().toLowerCase();
     const password = document.getElementById('login-password').value;
     const result = await Auth.login(email, password);
-    if (result.success) { this.showApp(); this.navigate('dashboard'); }
+    if (result.success) { this.showApp(); this.navigateToDefaultPage(); }
     else { document.getElementById('login-error').textContent = result.error; }
     if (result.success) this.startCloudSync();
   },
 
-  async handleRegister() {
-    const prenom = document.getElementById('reg-prenom').value.trim();
-    const nom = document.getElementById('reg-nom').value.trim();
-    const username = document.getElementById('reg-username').value.trim();
-    const email = document.getElementById('reg-email').value.trim();
-    const password = document.getElementById('reg-password').value;
-
-    if (!prenom || !nom || !username || !email || !password) {
-      document.getElementById('reg-error').textContent = 'Tous les champs sont requis.';
-      return;
-    }
-    if (password.length < 12) {
-      document.getElementById('reg-error').textContent = 'Le mot de passe doit comporter au moins 12 caractères.';
-      return;
-    }
-    try {
-      await Auth.register({ prenom, nom, username, email, password });
-      this.showLoginTab('login');
-      document.getElementById('login-username').value = email;
-      this.showToast('Inscription créée. Confirmez votre adresse e-mail avant de vous connecter.', 'success');
-    } catch (error) {
-      console.error('[GIS] Registration failed:', error);
-      document.getElementById('reg-error').textContent = Auth._authError(error);
-    }
-  },
-
-  async handleBootstrap() {
+  async handleFirstSuperAdminSignup() {
     const data = {
-      prenom: document.getElementById('boot-prenom').value.trim(),
-      nom: document.getElementById('boot-nom').value.trim(),
-      username: document.getElementById('boot-username').value.trim(),
-      email: document.getElementById('boot-email').value.trim(),
-      password: document.getElementById('boot-password').value,
-      setupToken: document.getElementById('boot-token').value
+      prenom: document.getElementById('first-admin-prenom').value.trim(),
+      nom: document.getElementById('first-admin-nom').value.trim(),
+      username: document.getElementById('first-admin-username').value.trim().toLowerCase(),
+      email: document.getElementById('first-admin-email').value.trim().toLowerCase(),
+      password: document.getElementById('first-admin-password').value,
+      confirmation: document.getElementById('first-admin-password-confirm').value
     };
-    const errorEl = document.getElementById('bootstrap-error');
-    if (Object.values(data).some(value => !value)) {
+    const errorEl = document.getElementById('first-admin-error');
+    const successEl = document.getElementById('first-admin-success');
+    errorEl.textContent = '';
+    successEl.textContent = '';
+
+    if (!data.prenom || !data.nom || !data.email || !data.username) {
       errorEl.textContent = 'Tous les champs sont requis.';
       return;
     }
+    if (!/^[a-z0-9._-]{3,30}$/.test(data.username)) {
+      errorEl.textContent = 'L’identifiant doit contenir 3 à 30 caractères : lettres, chiffres, point, tiret ou souligné.';
+      return;
+    }
+    if (data.password.length < 12 || data.password.length > 128) {
+      errorEl.textContent = 'Le mot de passe doit comporter entre 12 et 128 caractères.';
+      return;
+    }
+    if (data.password !== data.confirmation) {
+      errorEl.textContent = 'Les mots de passe ne correspondent pas.';
+      return;
+    }
+
     try {
-      const result = await Auth.bootstrap(data);
-      if (!result.success) { errorEl.textContent = result.error; return; }
-      document.getElementById('boot-password').value = '';
-      document.getElementById('boot-token').value = '';
+      const result = await Auth.registerFirstSuperAdmin(data);
+      document.getElementById('first-admin-password').value = '';
+      document.getElementById('first-admin-password-confirm').value = '';
+      if (result.confirmationRequired) {
+        document.getElementById('first-admin-link').style.display = 'none';
+        successEl.textContent = 'Compte créé. Confirmez votre adresse e-mail pour vous connecter en SuperAdmin.';
+        return;
+      }
       this.showApp();
-      this.navigate('dashboard');
+      this.navigateToDefaultPage();
       this.startCloudSync();
     } catch (error) {
-      console.error('[GIS] Administrator bootstrap failed:', error);
-      errorEl.textContent = error.message || 'Impossible de configurer l’administrateur.';
+      console.error('[GIS] Initial SuperAdmin signup failed:', error);
+      errorEl.textContent = Auth._authError(error);
+    }
+  },
+
+  async handleAcceptInvitation() {
+    const password = document.getElementById('invite-password').value;
+    const confirmation = document.getElementById('invite-password-confirm').value;
+    const errorEl = document.getElementById('invitation-error');
+    errorEl.textContent = '';
+    if (password.length < 12 || password.length > 128) {
+      errorEl.textContent = 'Le mot de passe doit comporter entre 12 et 128 caractères.';
+      return;
+    }
+    if (password !== confirmation) {
+      errorEl.textContent = 'Les mots de passe ne correspondent pas.';
+      return;
+    }
+    try {
+      await Auth.acceptInvitation(password);
+      document.getElementById('invite-password').value = '';
+      document.getElementById('invite-password-confirm').value = '';
+      this.showApp();
+      this.navigateToDefaultPage();
+      this.startCloudSync();
+    } catch (error) {
+      console.error('[GIS] Invitation acceptance failed:', error);
+      errorEl.textContent = Auth._authError(error);
     }
   },
 
@@ -308,7 +360,10 @@ const App = {
 
   // ─── Navigation ──────────────────────────────────────────
   navigate(page) {
-    if (!Auth.hasPage(page)) { this.showToast('Accès refusé pour votre rôle.', 'error'); return; }
+    if (!Auth.canOpenPage(page)) {
+      this.showToast('Accès refusé pour votre rôle.', 'error');
+      return;
+    }
     this.currentPage = page;
     this.closeSidebar();
     document.querySelectorAll('.nav-item').forEach(el => {
@@ -531,7 +586,7 @@ const App = {
         </select>
       </div>
       <div class="toolbar-right">
-        ${Auth.canDo('manage_products') ? '<button class="btn btn-primary" onclick="App.openProductModal()">+ Nouveau Produit</button>' : ''}
+        ${Auth.canDo('manage_products') || Auth.canDo('manage_stock') ? '<button class="btn btn-primary" onclick="App.openProductModal()">+ Nouveau Produit</button>' : ''}
       </div>
     </div>
     <div class="products-grid">
@@ -558,7 +613,7 @@ const App = {
           </div>
         </div>
         <div class="product-actions">
-          ${Auth.canDo('manage_products') ? `<button class="btn btn-sm btn-outline" onclick="App.openProductModal('${p.id}')">✏️ Modifier</button>` : ''}
+          ${Auth.canDo('manage_products') || Auth.canDo('manage_stock') ? `<button class="btn btn-sm btn-outline" onclick="App.openProductModal('${p.id}')">✏️ Modifier</button>` : ''}
           ${Auth.hasPage('panier') ? `<button class="btn btn-sm btn-primary" onclick="App.addToCart('${p.id}')">🛒 Panier</button>` : ''}
         </div>
       </div>`).join('')}
@@ -593,6 +648,10 @@ const App = {
   },
 
   openProductModal(id = null) {
+    if (!Auth.canDo('manage_products') && !Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer les produits.', 'error');
+      return;
+    }
     this.editingProductId = id;
     document.getElementById('product-modal-title').textContent = id ? 'Modifier le Produit' : 'Nouveau Produit';
     if (id) {
@@ -614,6 +673,10 @@ const App = {
   },
 
   saveProduct() {
+    if (!Auth.canDo('manage_products') && !Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer les produits.', 'error');
+      return;
+    }
     const data = {
       code: document.getElementById('pm-code').value.trim(),
       name: document.getElementById('pm-name').value.trim(),
@@ -694,7 +757,7 @@ const App = {
     <div class="page-toolbar">
       <div class="toolbar-left"></div>
       <div class="toolbar-right">
-        <button class="btn btn-primary" onclick="App.openEntryModal()">+ Nouvelle Entrée de Stock</button>
+        ${Auth.canDo('manage_stock') ? '<button class="btn btn-primary" onclick="App.openEntryModal()">+ Nouvelle Entrée de Stock</button>' : ''}
       </div>
     </div>
     <div class="card">
@@ -752,9 +815,19 @@ const App = {
     </div>`;
   },
 
-  openEntryModal() { document.getElementById('entry-modal').style.display = 'flex'; },
+  openEntryModal() {
+    if (!Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer le stock.', 'error');
+      return;
+    }
+    document.getElementById('entry-modal').style.display = 'flex';
+  },
 
   saveEntry() {
+    if (!Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer le stock.', 'error');
+      return;
+    }
     const data = {
       type: document.getElementById('ent-type').value,
       produitId: document.getElementById('ent-produit').value,
@@ -787,7 +860,7 @@ const App = {
     <div class="card">
       <div class="card-header">
         <h3>📋 Saisie Inventaire Physique — ${formatDate(todayStr())}</h3>
-        <button class="btn btn-primary" onclick="App.validateInventory()">✅ Valider l'inventaire</button>
+        ${Auth.canDo('manage_stock') ? '<button class="btn btn-primary" onclick="App.validateInventory()">✅ Valider l’inventaire</button>' : ''}
       </div>
       <p class="text-muted" style="padding:0 20px 10px">Saisissez les quantités physiques comptées. Les écarts seront calculés automatiquement.</p>
       <table class="data-table" id="inv-table">
@@ -821,6 +894,10 @@ const App = {
   },
 
   async validateInventory() {
+    if (!Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de valider un inventaire.', 'error');
+      return;
+    }
     const ok = await GISDialog.confirm({
       title: 'Valider l\'inventaire',
       message: 'Les stocks seront ajustés aux quantités physiques saisies. Cette action crée des mouvements de correction. Continuer ?',
@@ -881,7 +958,7 @@ const App = {
               <td>
                 <div class="action-btns">
                   <button class="btn-icon" title="Imprimer" onclick="Invoices.printInvoice('${inv.id}')">🖨️</button>
-                  ${inv.statut !== 'annule' ? `<button class="btn-icon" title="Annuler" onclick="App.cancelInvoice('${inv.id}')">❌</button>` : ''}
+                  ${inv.statut !== 'annule' && Auth.canDo('delete_invoice') ? `<button class="btn-icon" title="Annuler" onclick="App.cancelInvoice('${inv.id}')">❌</button>` : ''}
                 </div>
               </td>
             </tr>`;
@@ -934,7 +1011,7 @@ const App = {
                 <option value="">-- Sélectionner --</option>
                 ${clients.map(c => `<option value="${c.id}" data-avoir="${c.avoir}" data-creance="${c.creance}">${c.nom} ${c.telephone ? '('+c.telephone+')' : ''}</option>`).join('')}
               </select>
-              <button class="btn btn-outline btn-sm" onclick="App.openClientModal()">+</button>
+              ${Auth.canDo('create_invoice') || Auth.canDo('create_devis') ? '<button class="btn btn-outline btn-sm" onclick="App.openClientModal()">+</button>' : ''}
             </div>
             <div id="client-info-box" style="display:none;margin-top:6px;padding:8px;background:rgba(108,99,255,0.1);border-radius:6px;font-size:12px"></div>
           </div>
@@ -1100,7 +1177,11 @@ const App = {
     if (liee) liee.style.display = ['credit_paye','retrait_avoir'].includes(t) ? 'block' : 'none';
   },
 
-  saveInvoice(print = false) {
+  async saveInvoice(print = false) {
+    if (!Auth.canDo('create_invoice')) {
+      this.showToast('Votre rôle ne permet pas de créer une facture.', 'error');
+      return;
+    }
     const clientId = document.getElementById('inv-client').value;
     if (!clientId) { this.showToast('Veuillez sélectionner un client.', 'error'); return; }
     const activeLignes = this.invoiceLines.filter(l => l !== null && l.qte > 0);
@@ -1117,7 +1198,7 @@ const App = {
       notes: document.getElementById('inv-notes').value,
       lignes: activeLignes.map(l => ({ ...l, unite: Stock.getProduct(l.produitId)?.unite || '' }))
     };
-    const result = Invoices.createInvoice(data);
+    const result = await Invoices.createInvoice(data);
     if (result.success) {
       this.showToast(`Facture ${result.invoice.numero} créée.`, 'success');
       this.updateBadges();
@@ -1127,6 +1208,10 @@ const App = {
   },
 
   async cancelInvoice(id) {
+    if (!Auth.canDo('delete_invoice')) {
+      this.showToast('Votre rôle ne permet pas d’annuler une facture.', 'error');
+      return;
+    }
     const inv = Invoices.getInvoice(id);
     const ok = await GISDialog.confirm({
       title: 'Annuler la facture',
@@ -1183,7 +1268,7 @@ const App = {
                 <div class="action-btns">
                   <button class="btn-icon" title="Imprimer" onclick="Invoices.printDevis('${d.id}')">🖨️</button>
                   ${d.statut === 'en_attente' ? `<button class="btn-icon" title="Convertir en facture" onclick="App.convertDevis('${d.id}')">🧾</button>` : ''}
-                  ${d.statut === 'en_attente' ? `<button class="btn-icon" title="Marquer accepté" onclick="Invoices.updateDevisStatut('${d.id}','accepte');App.renderDevis()">✅</button>` : ''}
+                  ${d.statut === 'en_attente' && Auth.canDo('create_devis') ? `<button class="btn-icon" title="Marquer accepté" onclick="Invoices.updateDevisStatut('${d.id}','accepte');App.renderDevis()">✅</button>` : ''}
                 </div>
               </td>
             </tr>`;
@@ -1473,7 +1558,7 @@ const App = {
                 <option value="">-- Sélectionner --</option>
                 ${clients.map(c => `<option value="${c.id}">${c.nom}</option>`).join('')}
               </select>
-              <button class="btn btn-outline btn-sm" onclick="App.openClientModal()">+</button>
+              ${Auth.canDo('create_invoice') || Auth.canDo('create_devis') ? '<button class="btn btn-outline btn-sm" onclick="App.openClientModal()">+</button>' : ''}
             </div>
           </div>
           <div class="form-group"><label>Date</label><input type="date" id="dev-date" class="form-input" value="${todayStr()}"></div>
@@ -1555,6 +1640,10 @@ const App = {
   },
 
   saveDevis(print = false) {
+    if (!Auth.canDo('create_devis')) {
+      this.showToast('Votre rôle ne permet pas de créer un devis.', 'error');
+      return;
+    }
     const clientId = document.getElementById('dev-client').value;
     if (!clientId) { this.showToast('Veuillez sélectionner un client.', 'error'); return; }
     const lignes = this.devisLines.filter(l => l !== null && l.qte > 0);
@@ -1607,8 +1696,13 @@ const App = {
     document.body.appendChild(modal);
   },
 
-  doConvertDevis(devisId, modalEl) {
-    const result = Invoices.convertDevisToInvoice(devisId, {
+  async doConvertDevis(devisId, modalEl) {
+    if (!Auth.canDo('create_invoice')) {
+      this.showToast('Votre rôle ne permet pas de créer une facture.', 'error');
+      modalEl.remove();
+      return;
+    }
+    const result = await Invoices.convertDevisToInvoice(devisId, {
       type: document.getElementById('conv-type').value,
       modePaiement: document.getElementById('conv-mode').value,
       montantPaye: parseFloat(document.getElementById('conv-paye').value) || 0
@@ -1648,8 +1742,8 @@ const App = {
           <span class="caisse-total-val" style="color:${total.solde >= 0 ? '#2ED573' : '#FF4757'}">${formatCurrency(total.solde)}</span>
         </div>
         <div style="display:flex;gap:10px">
-          <button class="btn btn-primary" onclick="App.openCaisseModal('encaissement')">+ Encaissement</button>
-          <button class="btn btn-danger" onclick="App.openCaisseModal('decaissement')">- Décaissement</button>
+          ${Auth.canDo('view_caisse') ? `<button class="btn btn-primary" onclick="App.openCaisseModal('encaissement')">+ Encaissement</button>
+          <button class="btn btn-danger" onclick="App.openCaisseModal('decaissement')">- Décaissement</button>` : ''}
         </div>
       </div>
 
@@ -1698,6 +1792,10 @@ const App = {
   },
 
   openCaisseModal(type) {
+    if (!Auth.canDo('view_caisse')) {
+      this.showToast('Votre rôle ne permet pas de gérer la caisse.', 'error');
+      return;
+    }
     this._caisseOpType = type;
     document.getElementById('caisse-modal-title').textContent = type === 'encaissement' ? '💵 Nouvel Encaissement' : '💸 Nouveau Décaissement';
     document.getElementById('caisse-modal').style.display = 'flex';
@@ -1706,6 +1804,10 @@ const App = {
   },
 
   saveCaisseOp() {
+    if (!Auth.canDo('view_caisse')) {
+      this.showToast('Votre rôle ne permet pas de gérer la caisse.', 'error');
+      return;
+    }
     const montant = parseFloat(document.getElementById('cais-montant').value) || 0;
     const desc = document.getElementById('cais-desc').value.trim();
     if (!montant || !desc) { this.showToast('Montant et description requis.', 'error'); return; }
@@ -1727,7 +1829,7 @@ const App = {
       <div class="toolbar-right">
         <div class="kpi-mini danger"><span>Créances:</span><strong>${formatCurrency(totalCreance)}</strong></div>
         <div class="kpi-mini"><span>Avoirs:</span><strong>${formatCurrency(totalAvoir)}</strong></div>
-        <button class="btn btn-primary" onclick="App.openClientModal()">+ Nouveau Client</button>
+        ${Auth.canDo('create_invoice') || Auth.canDo('create_devis') ? '<button class="btn btn-primary" onclick="App.openClientModal()">+ Nouveau Client</button>' : ''}
       </div>
     </div>
     <div class="card">
@@ -1744,7 +1846,7 @@ const App = {
             <td class="${(c.avoir||0) > 0 ? 'text-success fw-bold' : 'text-muted'}">${formatCurrency(c.avoir||0)}</td>
             <td>
               <div class="action-btns">
-                <button class="btn-icon" onclick="App.editClientModal('${c.id}')">✏️</button>
+                ${Auth.canDo('create_invoice') || Auth.canDo('create_devis') ? `<button class="btn-icon" onclick="App.editClientModal('${c.id}')">✏️</button>` : ''}
                 <button class="btn-icon" onclick="App.navigate('factures')">🧾</button>
               </div>
             </td>
@@ -1778,6 +1880,10 @@ const App = {
   },
 
   openClientModal() {
+    if (!Auth.canDo('create_invoice') && !Auth.canDo('create_devis')) {
+      this.showToast('Votre rôle ne permet pas de gérer les clients.', 'error');
+      return;
+    }
     document.getElementById('client-modal-title').textContent = 'Nouveau Client';
     document.getElementById('client-edit-id').value = '';
     ['cli-nom','cli-tel','cli-email','cli-adresse'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
@@ -1785,6 +1891,10 @@ const App = {
   },
 
   editClientModal(id) {
+    if (!Auth.canDo('create_invoice') && !Auth.canDo('create_devis')) {
+      this.showToast('Votre rôle ne permet pas de gérer les clients.', 'error');
+      return;
+    }
     const c = Invoices.getClient(id);
     if (!c) return;
     document.getElementById('client-modal-title').textContent = 'Modifier Client';
@@ -1797,6 +1907,10 @@ const App = {
   },
 
   saveClient() {
+    if (!Auth.canDo('create_invoice') && !Auth.canDo('create_devis')) {
+      this.showToast('Votre rôle ne permet pas de gérer les clients.', 'error');
+      return;
+    }
     const nom = document.getElementById('cli-nom').value.trim();
     if (!nom) { this.showToast('Le nom est requis.', 'error'); return; }
     const data = { nom, telephone: document.getElementById('cli-tel').value, email: document.getElementById('cli-email').value, adresse: document.getElementById('cli-adresse').value };
@@ -2183,7 +2297,7 @@ const App = {
     document.getElementById('main-content').innerHTML = `
     <div class="page-toolbar">
       <div class="toolbar-left"><button class="btn btn-outline" onclick="App.showGuideMetiers()">📖 Guide des Métiers</button></div>
-      <div class="toolbar-right"><button class="btn btn-primary" onclick="App.openUserModal()">+ Nouvel Utilisateur</button></div>
+      <div class="toolbar-right">${Auth.isAdmin() ? '<button class="btn btn-primary" onclick="App.openUserModal()">+ Inviter un utilisateur</button>' : ''}</div>
     </div>
     <div class="card">
       <table class="data-table">
@@ -2202,8 +2316,8 @@ const App = {
               <td><span class="status-badge ${u.actif ? 'status-paye' : 'status-annule'}">${u.actif ? '✅ Actif' : '❌ Inactif'}</span></td>
               <td>
                 <div class="action-btns">
-                  ${u.role !== 'superadmin' && (Auth.isSuperAdmin() || u.role !== 'admin') ? `<button class="btn-icon" onclick="App.openUserModal('${u.id}')">✏️</button>` : ''}
-                  ${u.id !== Auth.getCurrentUser()?.id && u.role !== 'superadmin' ? `<button class="btn-icon" onclick="App.toggleUserActive('${u.id}')">${u.actif ? '🔒' : '🔓'}</button>` : ''}
+                  ${Auth.isAdmin() && u.role !== 'superadmin' && (Auth.isSuperAdmin() || u.role !== 'admin') ? `<button class="btn-icon" onclick="App.openUserModal('${u.id}')">✏️</button>` : ''}
+                  ${Auth.isAdmin() && u.id !== Auth.getCurrentUser()?.id && u.role !== 'superadmin' ? `<button class="btn-icon" onclick="App.toggleUserActive('${u.id}')">${u.actif ? '🔒' : '🔓'}</button>` : ''}
                 </div>
               </td>
             </tr>`;
@@ -2214,7 +2328,7 @@ const App = {
 
     <div id="user-modal" class="modal-overlay" style="display:none">
       <div class="modal">
-        <div class="modal-header"><h3 id="user-modal-title">Nouvel Utilisateur</h3><button class="modal-close" onclick="App.closeModal('user-modal')">✕</button></div>
+        <div class="modal-header"><h3 id="user-modal-title">Inviter un Utilisateur</h3><button class="modal-close" onclick="App.closeModal('user-modal')">✕</button></div>
         <div class="modal-body">
           <input type="hidden" id="user-edit-id">
           <div class="form-grid">
@@ -2235,14 +2349,19 @@ const App = {
         </div>
         <div class="modal-footer">
           <button class="btn btn-outline" onclick="App.closeModal('user-modal')">Annuler</button>
-          <button class="btn btn-primary" onclick="App.saveUser()">💾 Enregistrer</button>
+          <button class="btn btn-primary" id="user-save-button" onclick="App.saveUser()">📩 Envoyer l’invitation</button>
         </div>
       </div>
     </div>`;
   },
 
   openUserModal(id = null) {
-    document.getElementById('user-modal-title').textContent = id ? 'Modifier Utilisateur' : 'Nouvel Utilisateur';
+    if (!Auth.isAdmin()) {
+      this.showToast('La gestion des utilisateurs est réservée aux administrateurs.', 'error');
+      return;
+    }
+    document.getElementById('user-modal-title').textContent = id ? 'Modifier Utilisateur' : 'Inviter un Utilisateur';
+    document.getElementById('user-save-button').textContent = id ? '💾 Enregistrer' : '📩 Envoyer l’invitation';
     document.getElementById('user-edit-id').value = id || '';
     if (id) {
       const u = DB.findById('users', id);
@@ -2262,6 +2381,10 @@ const App = {
   },
 
   async saveUser() {
+    if (!Auth.isAdmin()) {
+      this.showToast('La gestion des utilisateurs est réservée aux administrateurs.', 'error');
+      return;
+    }
     const editId = document.getElementById('user-edit-id').value;
     const data = {
       prenom: document.getElementById('usr-prenom').value.trim(),
@@ -2281,7 +2404,7 @@ const App = {
       result = await UserManager.create(data);
       if (result.success) {
         this.closeModal('user-modal');
-        this.showToast(result.warning || 'Compte créé. Un lien de définition du mot de passe a été envoyé par e-mail.', result.warning ? 'error' : 'success');
+        this.showToast('Invitation envoyée par e-mail.', 'success');
         this.renderUtilisateurs();
       }
     }
@@ -2390,7 +2513,7 @@ const App = {
         <input type="text" class="search-input" id="four-search" placeholder="🔍 Rechercher..." value="${filterSearch}" oninput="App.liveSearch('renderFournisseurs', this.value)">
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-primary" onclick="App.openFournisseurModal()">+ Nouveau Fournisseur</button>
+        ${Auth.canDo('manage_stock') ? '<button class="btn btn-primary" onclick="App.openFournisseurModal()">+ Nouveau Fournisseur</button>' : ''}
       </div>
     </div>
     <div class="card">
@@ -2407,7 +2530,7 @@ const App = {
             <td><span class="status-badge status-${f.actif?'ok':'annule'}">${f.actif?'Actif':'Inactif'}</span></td>
             <td>
               <div class="action-btns">
-                <button class="btn-icon" title="Modifier" onclick="App.openFournisseurModal('${f.id}')">✏️</button>
+                ${Auth.canDo('manage_stock') ? `<button class="btn-icon" title="Modifier" onclick="App.openFournisseurModal('${f.id}')">✏️</button>` : ''}
               </div>
             </td>
           </tr>`).join('')}
@@ -2439,6 +2562,10 @@ const App = {
   },
 
   openFournisseurModal(id = null) {
+    if (!Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer les fournisseurs.', 'error');
+      return;
+    }
     document.getElementById('fourn-modal-title').textContent = id ? 'Modifier le Fournisseur' : 'Nouveau Fournisseur';
     document.getElementById('fourn-id').value = id || '';
     if (id) {
@@ -2458,6 +2585,10 @@ const App = {
   },
 
   saveFournisseur() {
+    if (!Auth.canDo('manage_stock')) {
+      this.showToast('Votre rôle ne permet pas de gérer les fournisseurs.', 'error');
+      return;
+    }
     const id = document.getElementById('fourn-id').value;
     const data = {
       nom: document.getElementById('fourn-nom').value.trim(),
@@ -2913,7 +3044,7 @@ const App = {
 
     <div class="card" style="margin-top:20px">
       <div class="card-header"><h3>👑 Gestion des Administrateurs</h3>
-        <button class="btn btn-primary btn-sm" onclick="App.saCreateAdmin()">+ Créer un Administrateur</button>
+        <button class="btn btn-primary btn-sm" onclick="App.saCreateAdmin()">+ Inviter un Administrateur</button>
       </div>
       <table class="data-table">
         <thead><tr><th>Utilisateur</th><th>Identifiant</th><th>Rôle actuel</th><th>Assigner le rôle</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -2979,7 +3110,7 @@ const App = {
     modal.className = 'modal-overlay'; modal.style.display = 'flex';
     modal.innerHTML = `
       <div class="modal" style="max-width:520px">
-        <div class="modal-header"><h3>👑 Nouvel Administrateur</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+        <div class="modal-header"><h3>👑 Inviter un Administrateur</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
         <div class="modal-body">
           <div class="form-grid">
             <div class="form-group"><label>Prénom *</label><input type="text" id="sa-adm-prenom" class="form-input" value="GIS"></div>
@@ -2987,11 +3118,11 @@ const App = {
             <div class="form-group"><label>Identifiant *</label><input type="text" id="sa-adm-username" class="form-input" placeholder="ex: admin2"></div>
             <div class="form-group"><label>Adresse e-mail *</label><input type="email" id="sa-adm-email" class="form-input" placeholder="admin@exemple.com"></div>
           </div>
-          <p class="text-muted" style="padding:0 14px;font-size:12px">Un lien de définition du mot de passe sera envoyé à cette adresse. Ce compte aura un accès Administrateur complet, hors console SuperAdmin.</p>
+          <p class="text-muted" style="padding:0 14px;font-size:12px">Une invitation sera envoyée à cette adresse. L’administrateur choisira son mot de passe à l’activation du compte.</p>
         </div>
         <div class="modal-footer">
           <button class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Annuler</button>
-          <button class="btn btn-primary" onclick="App.saCreateAdminSave(this.closest('.modal-overlay'))">👑 Créer l'administrateur</button>
+          <button class="btn btn-primary" onclick="App.saCreateAdminSave(this.closest('.modal-overlay'))">👑 Envoyer l’invitation</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
@@ -3010,7 +3141,7 @@ const App = {
     });
     if (!result.success) { this.showToast(result.error, 'error'); return; }
     modalEl.remove();
-    this.showToast(result.warning || 'Administrateur créé. Un lien de définition du mot de passe a été envoyé par e-mail.', result.warning ? 'error' : 'success');
+    this.showToast('Invitation administrateur envoyée par e-mail.', 'success');
     this.renderSuperAdmin();
   },
 

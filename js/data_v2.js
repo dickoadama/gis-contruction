@@ -389,6 +389,30 @@ const DB = {
       return item;
     }
   },
+  async addAsync(key, item) {
+    if (!CLOUD_COLLECTIONS.includes(key) || !supabaseClient) {
+      throw new Error('Écriture cloud indisponible.');
+    }
+    if (key === 'users') {
+      throw new Error('Les profils doivent être créés par la fonction d’administration.');
+    }
+    const id = item.id || generateId();
+    item.id = id;
+    const request = key === 'roles'
+      ? supabaseClient.from('roles').upsert(roleToRow(item), { onConflict: 'id' }).select('id').maybeSingle()
+      : supabaseClient.from('app_records').upsert({
+        collection: key,
+        record_id: id,
+        data: item
+      }, { onConflict: 'collection,record_id' }).select('record_id').maybeSingle();
+    const { data, error } = await request;
+    if (error) throw error;
+    if (!data) throw new Error('Enregistrement refusé ou introuvable.');
+    const index = window.GIS_STATE[key].findIndex(existing => existing.id === id);
+    if (index >= 0) window.GIS_STATE[key][index] = item;
+    else window.GIS_STATE[key].unshift(item);
+    return item;
+  },
   update(key, id, updates) {
     if (CLOUD_COLLECTIONS.includes(key)) {
       const idx = window.GIS_STATE[key].findIndex(i => i.id === id);

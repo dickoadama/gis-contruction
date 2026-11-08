@@ -62,8 +62,50 @@ async function invokeAdmin(action, payload = {}) {
 
 const Auth = {
   _currentUser: null,
+  _invitationPending: false,
+
+  async isInitialSuperAdminSignupOpen() {
+    const { data, error } = await supabaseClient.rpc('is_initial_superadmin_signup_open');
+    if (error) throw error;
+    return data === true;
+  },
+
+  async registerFirstSuperAdmin(profile) {
+    if (!(await this.isInitialSuperAdminSignupOpen())) {
+      throw new Error('Le premier compte SuperAdmin a déjà été créé.');
+    }
+
+    const { data, error } = await supabaseClient.auth.signUp({
+      email: profile.email,
+      password: profile.password,
+      options: {
+        emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
+        data: {
+          prenom: profile.prenom,
+          nom: profile.nom,
+          username: profile.username
+        }
+      }
+    });
+    if (error) throw error;
+    if (!data.user) throw new Error('Supabase n’a pas retourné le compte créé.');
+
+    if (data.session) {
+      const user = await this._loadProfile(data.user);
+      if (!user || user.role !== 'superadmin') {
+        const { error: signOutError } = await supabaseClient.auth.signOut();
+        if (signOutError) throw signOutError;
+        throw new Error('Le premier compte a déjà été créé. Demandez une invitation.');
+      }
+    }
+
+    return { confirmationRequired: !data.session };
+  },
 
   async restoreSession() {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const queryParams = new URLSearchParams(window.location.search);
+    this._invitationPending = hashParams.get('type') === 'invite' || queryParams.get('type') === 'invite';
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) throw error;
     const user = data.session?.user;
@@ -98,26 +140,18 @@ const Auth = {
     }
   },
 
-  async register(data) {
-    const { data: result, error } = await supabaseClient.auth.signUp({
-      email: data.email,
-      password: data.password,
-      options: {
-        emailRedirectTo: window.location.href.split('#')[0],
-        data: { prenom: data.prenom, nom: data.nom, username: data.username }
-      }
-    });
-    if (error) throw error;
-    if (result.session) {
-      const { error: signOutError } = await supabaseClient.auth.signOut();
-      if (signOutError) throw signOutError;
+  async acceptInvitation(password) {
+    if (!this._invitationPending || !this._currentUser) {
+      throw new Error('Le lien d’invitation est invalide ou expiré.');
     }
-    return { success: true };
-  },
-
-  async bootstrap(data) {
-    await invokeAdmin('bootstrap_admin', data);
-    return this.login(data.email, data.password);
+    const { error } = await supabaseClient.auth.updateUser({ password });
+    if (error) throw error;
+    this._invitationPending = false;
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.hash = '';
+    cleanUrl.searchParams.delete('type');
+    cleanUrl.searchParams.delete('code');
+    window.history.replaceState(window.history.state, '', cleanUrl.toString());
   },
 
   async sendPasswordReset(email) {
@@ -254,6 +288,10 @@ const Auth = {
     return this._getRolePerms(user.role).actions.includes(action);
   },
 
+  canOpenPage(page) {
+    return this.hasPage(page) && (page !== 'caisse' || this.canDo('view_caisse'));
+  },
+
   getRoleInfo(roleId) {
     if (roleId === 'superadmin') return { label: 'SuperAdmin', color: '#FF4757', icon: '🔑' };
     if (roleId === 'admin')      return { label: 'Administrateur', color: '#6C63FF', icon: '👑' };
@@ -289,7 +327,7 @@ const Auth = {
       { page: 'parametres',    icon: '⚙️',  label: 'Paramètres',           group: 'admin' },
       { page: 'profil',        icon: '🪪', label: 'Mon Profil',           group: 'compte' }
     ];
-    return allNav.filter(n => this.hasPage(n.page));
+    return allNav.filter(n => this.canOpenPage(n.page));
   }
 };
 
@@ -302,28 +340,19 @@ const UserManager = {
   async create(data) {
     if (!Auth.isAdmin()) return { success: false, error: 'Accès refusé.' };
     try {
-      const result = await invokeAdmin('create_user', {
+      const result = await invokeAdmin('invite_user', {
         prenom: data.prenom,
         nom: data.nom,
         username: data.username,
         email: data.email,
         telephone: data.telephone || '',
-        role: data.role || 'utilisateur'
+        role: data.role || 'utilisateur',
+        redirectTo: `${window.location.origin}${window.location.pathname}`
       });
-      try {
-        await Auth.sendPasswordReset(data.email);
-        return { success: true, user: { id: result.user.id, ...data, actif: true } };
-      } catch (error) {
-        console.error('[GIS] User created but password setup email failed:', error);
-        return {
-          success: true,
-          user: { id: result.user.id, ...data, actif: true },
-          warning: 'Compte créé, mais l’envoi du lien a échoué. Utilisez « Réinitialiser le mot de passe » pour le renvoyer.'
-        };
-      }
+      return { success: true, user: { id: result.user.id, ...data, actif: true } };
     } catch (error) {
       console.error('[GIS] User provisioning failed:', error);
-      return { success: false, error: error.message || 'Impossible de créer le compte.' };
+      return { success: false, error: error.message || 'Impossible d’envoyer l’invitation.' };
     }
   },
 

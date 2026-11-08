@@ -46,7 +46,7 @@ const Invoices = {
   },
 
   // ─── Factures ─────────────────────────────────────────────
-  createInvoice(data) {
+  async createInvoice(data) {
     const user = Auth.getCurrentUser();
     const client = DB.findById('clients', data.clientId);
     if (!client) return { success: false, error: 'Veuillez sélectionner un client valide.' };
@@ -107,6 +107,9 @@ const Invoices = {
     if (data.type === 'retrait_avoir' && (montantPaye <= 0 || montantPaye > (client.avoir || 0))) {
       return { success: false, error: 'Le retrait doit être positif et ne peut pas dépasser l’avoir disponible du client.' };
     }
+    if (data.type === 'retrait_avoir' && !Auth.canDo('view_caisse')) {
+      return { success: false, error: 'Un retrait d’avoir nécessite le droit de gestion de la caisse.' };
+    }
     if (data.type === 'credit_paye' && montantPaye > (client.creance || 0)) {
       return { success: false, error: 'Le règlement ne peut pas dépasser la créance du client.' };
     }
@@ -154,7 +157,12 @@ const Invoices = {
       createdAt: new Date().toISOString()
     };
 
-    DB.add('invoices', invoice);
+    try {
+      await DB.addAsync('invoices', invoice);
+    } catch (error) {
+      console.error('[GIS] Invoice creation failed:', error);
+      return { success: false, error: 'La facture n’a pas pu être enregistrée dans le cloud.' };
+    }
 
     // Mise à jour créance/avoir client
     this._updateClientBalance(invoice);
@@ -317,12 +325,12 @@ const Invoices = {
 
   getDevisById(id) { return DB.findById('devis', id); },
 
-  convertDevisToInvoice(devisId, invoiceData) {
+  async convertDevisToInvoice(devisId, invoiceData) {
     const devis = DB.findById('devis', devisId);
     if (!devis) return { success: false, error: 'Devis introuvable' };
     if (devis.statut === 'expire') return { success: false, error: 'Devis expiré — non convertible.' };
     if (devis.statut === 'converti') return { success: false, error: 'Devis déjà converti.' };
-    const result = this.createInvoice({
+    const result = await this.createInvoice({
       ...invoiceData,
       clientId: devis.clientId,
       lignes: devis.lignes,

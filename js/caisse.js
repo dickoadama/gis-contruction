@@ -6,11 +6,20 @@
 const Caisse = {
   addOperation(data) {
     const user = Auth.getCurrentUser();
+    const type = data.type || 'encaissement';
+    const linkedInvoice = typeof data.factureId === 'string' && data.factureId.length > 0;
+    if (!Auth.canDo('view_caisse') && !(
+      linkedInvoice &&
+      ((type === 'encaissement' && Auth.canDo('create_invoice')) ||
+       (type === 'decaissement' && Auth.canDo('delete_invoice')))
+    )) {
+      return { success: false, error: 'Accès refusé pour cette opération de caisse.' };
+    }
     const montant = Number(data.montant);
     if (!Number.isFinite(montant) || montant <= 0) {
       return { success: false, error: 'Le montant doit être un nombre supérieur à zéro.' };
     }
-    if (!['encaissement', 'decaissement'].includes(data.type || 'encaissement')) {
+    if (!['encaissement', 'decaissement'].includes(type)) {
       return { success: false, error: 'Type d’opération invalide.' };
     }
     if (!PAYMENT_METHODS.some(method => method.id === (data.modePaiement || 'especes'))) {
@@ -18,7 +27,7 @@ const Caisse = {
     }
     const op = {
       id: generateId('CAISSE'),
-      type: data.type || 'encaissement', // encaissement | decaissement
+      type, // encaissement | decaissement
       montant,
       modePaiement: data.modePaiement || 'especes',
       description: data.description || '',

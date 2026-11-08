@@ -36,9 +36,8 @@
     </div>
 
     <!-- TABS -->
-    <div style="display:flex; border-bottom: 2px solid #333; margin-bottom: 20px;">
+    <div id="login-tabs" style="display:flex; border-bottom: 2px solid #333; margin-bottom: 20px;">
       <button id="tab-login" onclick="App.showLoginTab('login')" style="flex:1; background:none; border:none; color:#6C63FF; padding:10px; font-weight:700; border-bottom: 3px solid #6C63FF; cursor:pointer;">Connexion</button>
-      <button id="tab-register" onclick="App.showLoginTab('register')" style="flex:1; background:none; border:none; color:#888; padding:10px; font-weight:700; border-bottom: 3px solid transparent; cursor:pointer;">Inscription</button>
     </div>
 
     <!-- CONNEXION FORM -->
@@ -58,32 +57,18 @@
       <button class="login-btn" onclick="App.handleLogin()">🔐 &nbsp; Se connecter</button>
     </div>
 
-    <!-- INSCRIPTION FORM -->
-    <div id="form-register" class="login-form" style="display:none;">
+    <div id="form-invitation" class="login-form" style="display:none;">
+      <p style="font-size:13px;color:#aaa;margin-bottom:15px">Votre compte a été invité par un administrateur. Choisissez un mot de passe pour activer votre accès.</p>
       <div class="form-group">
-        <label>Prénom & Nom</label>
-        <div style="display:flex; gap:10px;">
-          <input type="text" id="reg-prenom" class="login-input" placeholder="Prénom" style="flex:1">
-          <input type="text" id="reg-nom" class="login-input" placeholder="Nom" style="flex:1">
-        </div>
+        <label>Nouveau mot de passe (12 caractères minimum)</label>
+        <input type="password" id="invite-password" class="login-input" autocomplete="new-password">
       </div>
       <div class="form-group">
-        <label>Identifiant souhaité</label>
-        <input type="text" id="reg-username" class="login-input" placeholder="ex: jdupont" autocomplete="username">
+        <label>Confirmer le mot de passe</label>
+        <input type="password" id="invite-password-confirm" class="login-input" autocomplete="new-password">
       </div>
-      <div class="form-group">
-        <label>Adresse e-mail</label>
-        <input type="email" id="reg-email" class="login-input" placeholder="vous@exemple.com" autocomplete="email">
-      </div>
-      <div class="form-group">
-        <label>Mot de passe</label>
-        <input type="password" id="reg-password" class="login-input" placeholder="12 caractères minimum" autocomplete="new-password">
-      </div>
-      <div style="padding:8px 10px;background:rgba(108,99,255,0.08);border:1px solid rgba(108,99,255,0.2);border-radius:6px;font-size:11px;color:#9aaec4;margin-bottom:4px;">
-        ℹ️ Votre compte sera créé avec un accès limité. Un <strong style="color:#6C63FF">Administrateur</strong> devra vous attribuer un rôle pour activer vos accès.
-      </div>
-      <div id="reg-error" class="login-error"></div>
-      <button class="login-btn" onclick="App.handleRegister()">📝 &nbsp; S'inscrire</button>
+      <div id="invitation-error" class="login-error"></div>
+      <button class="login-btn" onclick="App.handleAcceptInvitation()">✅ &nbsp; Activer mon compte</button>
     </div>
 
     <!-- FORGOT PASSWORD FORM -->
@@ -99,28 +84,45 @@
       </div>
     </div>
 
-    <!-- Initialisation sécurisée du premier administrateur -->
-    <div id="form-bootstrap" class="login-form" style="display:none;">
-      <p style="font-size:13px;color:#aaa;margin-bottom:8px">Réservé au premier démarrage. Entrez le jeton de bootstrap configuré dans les secrets des fonctions Supabase.</p>
-      <div class="form-group"><label>Prénom</label><input type="text" id="boot-prenom" class="login-input" autocomplete="given-name"></div>
-      <div class="form-group"><label>Nom</label><input type="text" id="boot-nom" class="login-input" autocomplete="family-name"></div>
-      <div class="form-group"><label>Identifiant</label><input type="text" id="boot-username" class="login-input" autocomplete="username"></div>
-      <div class="form-group"><label>Adresse e-mail</label><input type="email" id="boot-email" class="login-input" autocomplete="email"></div>
-      <div class="form-group"><label>Mot de passe (12 caractères minimum)</label><input type="password" id="boot-password" class="login-input" autocomplete="new-password"></div>
-      <div class="form-group"><label>Jeton de configuration initiale</label><input type="password" id="boot-token" class="login-input" autocomplete="off"></div>
-      <div id="bootstrap-error" class="login-error"></div>
-      <button class="login-btn" onclick="App.handleBootstrap()">🔐 &nbsp; Configurer l'administrateur</button>
-      <div style="text-align:center;margin-top:12px">
-        <a href="#" onclick="App.showLoginTab('login');return false" style="color:#6C63FF;font-size:12px;text-decoration:none">⬅ Retour à la connexion</a>
+    <div id="form-first-admin" class="login-form" style="display:none;">
+      <p class="login-form-intro">Premier compte SuperAdmin. Les suivants seront invités.</p>
+      <div class="first-admin-fields">
+        <div class="form-group">
+          <label for="first-admin-prenom">Prénom</label>
+          <input type="text" id="first-admin-prenom" class="login-input" autocomplete="given-name" required>
+        </div>
+        <div class="form-group">
+          <label for="first-admin-nom">Nom</label>
+          <input type="text" id="first-admin-nom" class="login-input" autocomplete="family-name" required>
+        </div>
+        <div class="form-group first-admin-full">
+          <label for="first-admin-username">Identifiant</label>
+          <input type="text" id="first-admin-username" class="login-input" autocomplete="username" required>
+        </div>
+        <div class="form-group first-admin-full">
+          <label for="first-admin-email">Adresse e-mail</label>
+          <input type="email" id="first-admin-email" class="login-input" autocomplete="email" required>
+        </div>
+        <div class="form-group">
+          <label for="first-admin-password">Mot de passe (12 min.)</label>
+          <input type="password" id="first-admin-password" class="login-input" autocomplete="new-password" required>
+        </div>
+        <div class="form-group">
+          <label for="first-admin-password-confirm">Confirmation</label>
+          <input type="password" id="first-admin-password-confirm" class="login-input" autocomplete="new-password" required>
+        </div>
+      </div>
+      <div id="first-admin-error" class="login-error" aria-live="polite"></div>
+      <div id="first-admin-success" class="login-success" aria-live="polite"></div>
+      <button class="login-btn" onclick="App.handleFirstSuperAdminSignup()">Créer le compte SuperAdmin</button>
+      <div class="login-form-back">
+        <a href="#" onclick="App.showLoginTab('login');return false">⬅ Retour à la connexion</a>
       </div>
     </div>
 
-    <!-- Aucun identifiant de démonstration ni mot de passe codé en dur -->
-    <div class="login-hints" style="margin-top:20px;">
-      <p>Les comptes sont gérés par Supabase Auth.</p>
-      <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
-        <a href="#" onclick="App.showLoginTab('bootstrap');return false" style="color:#8f8aff;font-size:12px;text-decoration:none;">Premier démarrage : créer l'administrateur</a>
-      </div>
+    <div id="login-hints" class="login-hints" style="margin-top:20px;">
+      <p id="login-hint-text">Le premier compte devient SuperAdmin; les comptes suivants sont sur invitation.</p>
+      <a id="first-admin-link" href="#" style="display:none" onclick="App.showLoginTab('first-admin');return false">Créer le premier compte SuperAdmin</a>
     </div>
 
     <!-- Indicateur de synchronisation cloud (discret, ne bloque jamais) -->

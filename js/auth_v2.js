@@ -24,7 +24,7 @@ const ALL_PAGES = [
   { id: 'notifications',  label: 'Notifications',      icon: '🔔' },
   { id: 'profil',         label: 'Mon Profil',         icon: '🪪' },
   { id: 'parametres',     label: 'Paramètres',         icon: '⚙️'  },
-  { id: 'utilisateurs',   label: 'Utilisateurs',       icon: '👤' },
+  { id: 'utilisateurs',   label: 'Équipe',             icon: '👤' },
   { id: 'roles',          label: 'Rôles & Droits',     icon: '🔐' },
   { id: 'archives',       label: 'Archives',           icon: '🗄️' },
 ];
@@ -49,96 +49,56 @@ const Auth = {
   _currentUser: null,
 
   async restoreSession() {
-    const user = await new Promise((resolve, reject) => {
-      const unsubscribe = firebase.auth().onAuthStateChanged(
-        currentUser => { unsubscribe(); resolve(currentUser); },
-        error => { unsubscribe(); reject(error); }
-      );
-    });
-    if (!user) { this._currentUser = null; return null; }
-    return this._loadProfile(user);
+    if (!supabaseClient) throw new Error('Supabase n’est pas configuré. Renseignez l’URL et la clé publique du projet.');
+    const { data: { session }, error } = await supabaseClient.auth.getSession();
+    if (error) throw error;
+    if (!session) { this._currentUser = null; return null; }
+    return this._loadProfile(session.user);
   },
 
-  async login(email, password, pendingProfile) {
+  async login(email, password) {
     try {
-      const credential = await firebase.auth().signInWithEmailAndPassword(email, password);
-      const user = credential.user;
-      if (!user.emailVerified) {
-        try {
-          await user.sendEmailVerification();
-        } finally {
-          await firebase.auth().signOut();
-        }
-        return { success: false, error: 'Confirmez votre adresse e-mail à l’aide du lien qui vient de vous être envoyé.' };
-      }
-
-      let profileSnapshot = await db.collection('users').doc(user.uid).get();
-      if (!profileSnapshot.exists && pendingProfile && pendingProfile.email === user.email) {
-        await firebase.functions().httpsCallable('completeRegistration')({
-          prenom: pendingProfile.prenom,
-          nom: pendingProfile.nom,
-          username: pendingProfile.username
-        });
-        profileSnapshot = await db.collection('users').doc(user.uid).get();
-        localStorage.removeItem('GIS_pending_profile');
-      }
-      if (!profileSnapshot.exists || profileSnapshot.data().actif !== true) {
-        await firebase.auth().signOut();
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      const profile = await this._loadProfile(data.user);
+      if (!profile) {
+        await supabaseClient.auth.signOut();
         return { success: false, error: 'Compte inactif ou profil introuvable. Contactez un administrateur.' };
       }
-
-      this._currentUser = { id: user.uid, ...profileSnapshot.data() };
       return { success: true, user: this._currentUser };
     } catch (error) {
-      console.error('[GIS] Firebase Authentication failed:', error);
-      if (firebase.auth().currentUser) {
-        try { await firebase.auth().signOut(); } catch (signOutError) {
-          console.error('[GIS] Could not clear failed sign-in session:', signOutError);
-        }
-      }
+      console.error('[GIS] Supabase sign-in failed:', error);
+      try { await supabaseClient.auth.signOut(); } catch (signOutError) { console.error('[GIS] Could not clear failed sign-in session:', signOutError); }
       return { success: false, error: this._authError(error) };
     }
   },
 
   async register(data) {
-    const credential = await firebase.auth().createUserWithEmailAndPassword(data.email, data.password);
-    try {
-      localStorage.setItem('GIS_pending_profile', JSON.stringify({
-        email: credential.user.email,
-        prenom: data.prenom,
-        nom: data.nom,
-        username: data.username
-      }));
-      await credential.user.sendEmailVerification();
-      await firebase.auth().signOut();
-      return { success: true };
-    } catch (error) {
-      try { await credential.user.delete(); } catch (cleanupError) {
-        console.error('[GIS] Could not remove incomplete Firebase account:', cleanupError);
-      }
-      localStorage.removeItem('GIS_pending_profile');
-      throw error;
-    }
-  },
-
-  async bootstrap(data) {
-    await firebase.functions().httpsCallable('bootstrapAdmin')(data);
-    return this.login(data.email, data.password);
+    const { data: result, error } = await supabaseClient.auth.signUp({
+      email: data.email,
+      password: data.password,
+      options: { data: { prenom: data.prenom, nom: data.nom, username: data.username } }
+    });
+    if (error) throw error;
+    if (result.session) await supabaseClient.auth.signOut();
+    return { success: true };
   },
 
   async sendPasswordReset(email) {
-    await firebase.auth().sendPasswordResetEmail(email);
+    const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+    if (error) throw error;
   },
 
-  async _loadProfile(user) {
+  async _loadProfile(authUser) {
     try {
-      const snapshot = await db.collection('users').doc(user.uid).get();
-      if (!snapshot.exists || snapshot.data().actif !== true) {
+      const { data, error } = await supabaseClient.from('users').select('*').eq('id', authUser.id).maybeSingle();
+      if (error) throw error;
+      if (!data || data.actif !== true) {
         this._currentUser = null;
-        await firebase.auth().signOut();
+        await supabaseClient.auth.signOut();
         return null;
       }
-      this._currentUser = { id: user.uid, ...snapshot.data() };
+      this._currentUser = { id: data.id, ...(data.data || {}), email: data.data?.email || authUser.email, role: data.role, actif: data.actif };
       return this._currentUser;
     } catch (error) {
       this._currentUser = null;
@@ -147,21 +107,19 @@ const Auth = {
   },
 
   refreshProfile() {
-    const user = firebase.auth().currentUser;
-    if (!user) return;
-    const profile = DB.findById('users', user.uid);
+    const profile = this._currentUser && DB.findById('users', this._currentUser.id);
     if (profile) this._currentUser = profile;
   },
 
   _authError(error) {
     const messages = {
-      'auth/invalid-email': 'Adresse e-mail invalide.',
-      'auth/invalid-credential': 'Adresse e-mail ou mot de passe incorrect.',
-      'auth/user-disabled': 'Ce compte est désactivé.',
-      'auth/too-many-requests': 'Trop de tentatives. Réessayez plus tard.',
-      'auth/email-already-in-use': 'Cette adresse e-mail est déjà utilisée.',
-      'auth/weak-password': 'Le mot de passe doit comporter au moins 12 caractères.',
-      'auth/network-request-failed': 'Connexion impossible. Vérifiez votre accès Internet.'
+      'invalid_email': 'Adresse e-mail invalide.',
+      'invalid_credentials': 'Adresse e-mail ou mot de passe incorrect.',
+      'user_already_exists': 'Cette adresse e-mail est déjà utilisée.',
+      'weak_password': 'Le mot de passe doit comporter au moins 12 caractères.',
+      'email_not_confirmed': 'Confirmez votre adresse e-mail avant de vous connecter.',
+      'too_many_requests': 'Trop de tentatives. Réessayez plus tard.',
+      'fetch failed': 'Connexion impossible. Vérifiez votre accès Internet.'
     };
     return messages[error.code] || error.message || 'Échec de l’authentification.';
   },
@@ -169,18 +127,17 @@ const Auth = {
   async logout() {
     DB.stopCloud();
     this._currentUser = null;
-    await firebase.auth().signOut();
+    await supabaseClient.auth.signOut();
     window.location.reload();
   },
 
   getSession() {
-    const user = firebase.auth().currentUser;
-    return user ? { userId: user.uid, role: this._currentUser && this._currentUser.role } : null;
+    return this._currentUser ? { userId: this._currentUser.id, role: this._currentUser.role } : null;
   },
 
   getCurrentUser() { return this._currentUser; },
 
-  isLoggedIn() { return !!(firebase.auth().currentUser && this._currentUser); },
+  isLoggedIn() { return !!(this._currentUser && this._currentUser.actif === true); },
 
   isSuperAdmin() {
     const user = this.getCurrentUser();
@@ -192,7 +149,7 @@ const Auth = {
     return !!(user && ['admin', 'superadmin'].includes(user.role));
   },
 
-  // Résolution des permissions depuis la collection Firestore 'roles'
+  // Résolution des permissions depuis la table Supabase 'roles'
   _getRolePerms(roleId) {
     if (roleId === 'superadmin') {
       // Accès total : toutes les pages/actions connues, PLUS tout ce qui est
@@ -262,7 +219,7 @@ const Auth = {
       { page: 'messages',      icon: '✉️',  label: 'Messages',             group: 'communication' },
       { page: 'notifications', icon: '🔔', label: 'Notifications',        group: 'communication' },
       { page: 'panier',        icon: '🛒', label: 'Panier',               group: 'commercial' },
-      { page: 'utilisateurs',  icon: '👤', label: 'Utilisateurs',         group: 'admin' },
+      { page: 'utilisateurs',  icon: '👤', label: 'Équipe',               group: 'admin' },
       { page: 'roles',         icon: '🔐', label: 'Rôles & Droits',       group: 'admin' },
       { page: 'parametres',    icon: '⚙️',  label: 'Paramètres',           group: 'admin' },
       { page: 'profil',        icon: '🪪', label: 'Mon Profil',           group: 'compte' }
@@ -280,27 +237,24 @@ const UserManager = {
   async create(data) {
     if (!Auth.isAdmin()) return { success: false, error: 'Accès refusé.' };
     try {
-      const result = await firebase.functions().httpsCallable('createManagedUser')({
-        prenom: data.prenom,
-        nom: data.nom,
-        username: data.username,
-        email: data.email,
-        telephone: data.telephone || '',
-        role: data.role || 'utilisateur'
+      const { data: result, error } = await supabaseClient.functions.invoke('manage-users', {
+        body: {
+          action: 'create',
+          prenom: data.prenom,
+          nom: data.nom,
+          username: data.username,
+          email: data.email,
+          telephone: data.telephone || '',
+          role: data.role || 'utilisateur'
+        }
       });
-      try {
-        await Auth.sendPasswordReset(data.email);
-        return { success: true, user: { id: result.data.uid, ...data, actif: true } };
-      } catch (error) {
-        console.error('[GIS] User created but password setup email failed:', error);
-        return {
-          success: true,
-          user: { id: result.data.uid, ...data, actif: true },
-          warning: 'Compte créé, mais l’envoi du lien a échoué. Utilisez « Réinitialiser le mot de passe » pour le renvoyer.'
-        };
-      }
+      if (error) throw error;
+      const user = { id: result.id, ...data, actif: true };
+      if (!window.GIS_STATE.users.some(existing => existing.id === user.id)) window.GIS_STATE.users.push(user);
+      DB.persistCache();
+      return { success: true, user, warning: result.message };
     } catch (error) {
-      console.error('[GIS] User provisioning failed:', error);
+      console.error('[GIS] Supabase user provisioning failed:', error);
       return { success: false, error: error.message || 'Impossible de créer le compte.' };
     }
   },
@@ -309,8 +263,14 @@ const UserManager = {
     const currentUser = Auth.getCurrentUser();
     if (!Auth.isAdmin() && currentUser?.id !== id) return { success: false, error: 'Accès refusé.' };
     try {
-      const result = await firebase.functions().httpsCallable('updateUserProfile')({ uid: id, ...data });
-      const user = { id, ...result.data };
+      const existing = DB.findById('users', id);
+      if (existing && data.email && data.email !== existing.email) {
+        return { success: false, error: 'L’adresse e-mail de connexion ne peut pas être modifiée depuis ce formulaire.' };
+      }
+      const user = { ...existing, ...data };
+      const { id: userId, role, actif, ...profileData } = user;
+      const { error } = await supabaseClient.from('users').update({ role, actif, data: profileData }).eq('id', userId);
+      if (error) throw error;
       const index = window.GIS_STATE.users.findIndex(item => item.id === id);
       if (index >= 0) window.GIS_STATE.users[index] = user;
       if (currentUser.id === id) Auth._currentUser = user;
@@ -323,16 +283,17 @@ const UserManager = {
   },
 
   async changePassword(id, oldPass, newPass) {
-    const user = firebase.auth().currentUser;
-    if (!user || user.uid !== id) return { success: false, error: 'Accès refusé.' };
+    const user = Auth.getCurrentUser();
+    if (!user || user.id !== id) return { success: false, error: 'Accès refusé.' };
     if (!newPass || newPass.length < 12) return { success: false, error: 'Le nouveau mot de passe doit comporter au moins 12 caractères.' };
     try {
-      const credential = firebase.auth.EmailAuthProvider.credential(user.email, oldPass);
-      await user.reauthenticateWithCredential(credential);
-      await user.updatePassword(newPass);
+      const { error: verifyError } = await supabaseClient.auth.signInWithPassword({ email: user.email, password: oldPass });
+      if (verifyError) throw verifyError;
+      const { error } = await supabaseClient.auth.updateUser({ password: newPass });
+      if (error) throw error;
       return { success: true };
     } catch (error) {
-      console.error('[GIS] Password update failed:', error);
+      console.error('[GIS] Supabase password update failed:', error);
       return { success: false, error: Auth._authError(error) };
     }
   },
@@ -341,22 +302,19 @@ const UserManager = {
     if (!Auth.isAdmin()) return { success: false, error: 'Accès refusé.' };
     const user = DB.findById('users', id);
     if (!user) return { success: false, error: 'Utilisateur introuvable.' };
-    try {
-      await firebase.functions().httpsCallable('setUserActive')({ uid: id, actif: !user.actif });
-      return { success: true };
-    } catch (error) {
-      console.error('[GIS] User status update failed:', error);
-      return { success: false, error: error.message || 'Impossible de modifier le statut.' };
-    }
+    return this.update(id, { actif: !user.actif });
   },
 
   async delete(id) {
     if (!Auth.isAdmin()) return { success: false, error: 'Accès refusé.' };
     try {
-      await firebase.functions().httpsCallable('deleteManagedUser')({ uid: id });
+      const { error } = await supabaseClient.functions.invoke('manage-users', { body: { action: 'delete', id } });
+      if (error) throw error;
+      window.GIS_STATE.users = window.GIS_STATE.users.filter(user => user.id !== id);
+      DB.persistCache();
       return { success: true };
     } catch (error) {
-      console.error('[GIS] User deletion failed:', error);
+      console.error('[GIS] Supabase user deletion failed:', error);
       return { success: false, error: error.message || 'Impossible de supprimer le compte.' };
     }
   }

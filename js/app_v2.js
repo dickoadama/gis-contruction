@@ -18,7 +18,7 @@ const App = {
 
   // ─── Initialisation (démarrage instantané) ─────────────────
   // 1. Restauration du cache local → UI affichée immédiatement
-  // 2. Synchronisation Firestore en arrière-plan, sans blocage
+  // 2. Synchronisation Supabase en arrière-plan, sans blocage
   async init() {
     document.getElementById('app-shell').style.display = 'none';
     document.getElementById('login-screen').style.display = 'none';
@@ -34,9 +34,14 @@ const App = {
     try {
       await Auth.restoreSession();
     } catch (error) {
-      console.error('[GIS] Restoring Firebase session failed:', error);
+      console.error('[GIS] Restoring Supabase session failed:', error);
       this.showLogin();
-      this.showToast('Connexion Firebase indisponible. Vérifiez votre réseau puis réessayez.', 'error');
+      this.showToast(error.message || 'Connexion Supabase indisponible. Vérifiez la configuration du projet et votre réseau.', 'error');
+      return;
+    }
+    if (window.location.hash.includes('type=recovery')) {
+      this.showLogin();
+      this.showLoginTab('recovery');
       return;
     }
     if (!Auth.isLoggedIn()) { this.showLogin(); this.updateSyncHint(); return; }
@@ -106,7 +111,7 @@ const App = {
     document.getElementById('form-login').style.display = 'none';
     document.getElementById('form-register').style.display = 'none';
     document.getElementById('form-forgot').style.display = 'none';
-    document.getElementById('form-bootstrap').style.display = 'none';
+    document.getElementById('form-recovery').style.display = 'none';
 
     document.getElementById('tab-login').style.color = '#888';
     document.getElementById('tab-login').style.borderBottomColor = 'transparent';
@@ -124,8 +129,8 @@ const App = {
     } else if (tab === 'forgot') {
       document.getElementById('form-forgot').style.display = 'block';
       // keep both tabs inactive visually
-    } else if (tab === 'bootstrap') {
-      document.getElementById('form-bootstrap').style.display = 'block';
+    } else if (tab === 'recovery') {
+      document.getElementById('form-recovery').style.display = 'block';
     }
   },
 
@@ -159,11 +164,7 @@ const App = {
   async handleLogin() {
     const email = document.getElementById('login-username').value.trim().toLowerCase();
     const password = document.getElementById('login-password').value;
-    let pendingProfile = null;
-    try { pendingProfile = JSON.parse(localStorage.getItem('GIS_pending_profile')); } catch (error) {
-      console.warn('[GIS] Pending registration profile is invalid:', error);
-    }
-    const result = await Auth.login(email, password, pendingProfile);
+    const result = await Auth.login(email, password);
     if (result.success) { this.showApp(); this.navigate('dashboard'); }
     else { document.getElementById('login-error').textContent = result.error; }
     if (result.success) this.startCloudSync();
@@ -195,34 +196,6 @@ const App = {
     }
   },
 
-  async handleBootstrap() {
-    const data = {
-      prenom: document.getElementById('boot-prenom').value.trim(),
-      nom: document.getElementById('boot-nom').value.trim(),
-      username: document.getElementById('boot-username').value.trim(),
-      email: document.getElementById('boot-email').value.trim(),
-      password: document.getElementById('boot-password').value,
-      setupToken: document.getElementById('boot-token').value
-    };
-    const errorEl = document.getElementById('bootstrap-error');
-    if (Object.values(data).some(value => !value)) {
-      errorEl.textContent = 'Tous les champs sont requis.';
-      return;
-    }
-    try {
-      const result = await Auth.bootstrap(data);
-      if (!result.success) { errorEl.textContent = result.error; return; }
-      document.getElementById('boot-password').value = '';
-      document.getElementById('boot-token').value = '';
-      this.showApp();
-      this.navigate('dashboard');
-      this.startCloudSync();
-    } catch (error) {
-      console.error('[GIS] Administrator bootstrap failed:', error);
-      errorEl.textContent = error.message || 'Impossible de configurer l’administrateur.';
-    }
-  },
-
   async handleForgot() {
     const email = document.getElementById('forgot-username').value.trim();
     if (!email) {
@@ -236,6 +209,29 @@ const App = {
     } catch (error) {
       console.error('[GIS] Password reset request failed:', error);
       this.showToast(Auth._authError(error), 'error');
+    }
+  },
+
+  async handlePasswordRecovery() {
+    const password = document.getElementById('recovery-password').value;
+    const confirmation = document.getElementById('recovery-password-confirm').value;
+    const errorEl = document.getElementById('recovery-error');
+    if (password.length < 12) { errorEl.textContent = 'Le mot de passe doit comporter au moins 12 caractères.'; return; }
+    if (password !== confirmation) { errorEl.textContent = 'Les mots de passe ne correspondent pas.'; return; }
+    const { error } = await supabaseClient.auth.updateUser({ password });
+    if (error) { errorEl.textContent = Auth._authError(error); return; }
+    try {
+      await Auth.restoreSession();
+      if (!Auth.isLoggedIn()) {
+        this.showLogin();
+        this.showToast('Compte inactif. Contactez un administrateur pour activer vos accès.', 'error');
+        return;
+      }
+      this.showApp();
+      this.navigate('dashboard');
+      this.startCloudSync();
+    } catch (sessionError) {
+      errorEl.textContent = Auth._authError(sessionError);
     }
   },
 
@@ -2173,11 +2169,19 @@ const App = {
 
   // ─── UTILISATEURS ────────────────────────────────────────
   renderUtilisateurs() {
-    const users = UserManager.getAll();
+    const users = UserManager.getAll().filter(user => !['admin', 'superadmin'].includes(user.role));
+    const teamRoles = RoleManager.getAll().filter(role => ['ROLE_chauffeur', 'ROLE_chargeur', 'ROLE_caisse', 'ROLE_gestionnaire_stock'].includes(role.id));
     document.getElementById('main-content').innerHTML = `
     <div class="page-toolbar">
-      <div class="toolbar-left"><button class="btn btn-outline" onclick="App.showGuideMetiers()">📖 Guide des Métiers</button></div>
-      <div class="toolbar-right"><button class="btn btn-primary" onclick="App.openUserModal()">+ Nouvel Utilisateur</button></div>
+      <div class="toolbar-left"><span class="text-muted">Gestion des collaborateurs et attribution de leurs accès.</span></div>
+      <div class="toolbar-right"><button class="btn btn-primary" onclick="App.openUserModal()">+ Ajouter un collègue</button></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px">
+      ${teamRoles.map(role => `
+      <div class="card" style="padding:16px;border-top:3px solid ${role.color || '#00A8A8'}">
+        <h3 style="font-size:15px;margin-bottom:8px">${role.icon || '👤'} ${role.nom}</h3>
+        <p class="text-muted" style="font-size:12px;line-height:1.5">${role.description || 'Accès limité selon les permissions attribuées.'}</p>
+      </div>`).join('')}
     </div>
     <div class="card">
       <table class="data-table">
@@ -2246,10 +2250,12 @@ const App = {
         document.getElementById('usr-username').value = u.username;
         document.getElementById('usr-role').value = u.role;
         document.getElementById('usr-email').value = u.email || '';
+        document.getElementById('usr-email').readOnly = true;
         document.getElementById('usr-tel').value = u.telephone || '';
       }
     } else {
       ['usr-prenom','usr-nom','usr-username','usr-email','usr-tel'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+      document.getElementById('usr-email').readOnly = false;
       document.getElementById('usr-role').value = 'utilisateur';
     }
     document.getElementById('user-modal').style.display = 'flex';
@@ -2868,6 +2874,7 @@ const App = {
       return;
     }
     const users = DB.getAll('users');
+    const administrators = users.filter(user => user.role === 'admin');
     const counts = {
       users: users.length,
       products: DB.getAll('products').length,
@@ -2876,8 +2883,6 @@ const App = {
       clients: DB.getAll('clients').length,
       roles: DB.getAll('roles').length
     };
-    const allRoles = RoleManager.getAll();
-
     document.getElementById('main-content').innerHTML = `
     <div class="card" style="border-left:4px solid #FF4757">
       <div class="card-header"><h3>🔑 Console SuperAdmin</h3><span class="badge" style="background:rgba(255,71,87,0.15);color:#FF4757">Accès total</span></div>
@@ -2897,19 +2902,11 @@ const App = {
         <button class="btn btn-primary btn-sm" onclick="App.saCreateAdmin()">+ Créer un Administrateur</button>
       </div>
       <table class="data-table">
-        <thead><tr><th>Utilisateur</th><th>Identifiant</th><th>Rôle actuel</th><th>Assigner le rôle</th><th>Statut</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Administrateur</th><th>Identifiant</th><th>Statut</th><th>Actions</th></tr></thead>
         <tbody>
-          ${users.map(u => {
-            const ri = Auth.getRoleInfo(u.role);
-            return `<tr>
+          ${administrators.length ? administrators.map(u => `<tr>
               <td><strong>${u.prenom} ${u.nom}</strong></td>
               <td><code>${u.username}</code></td>
-              <td><span class="badge" style="background:${ri.color}22;color:${ri.color}">${ri.icon} ${ri.label}</span></td>
-              <td>
-                <select class="form-input-inline" style="width:190px" onchange="App.saAssignRole('${u.id}', this.value)">
-                  ${allRoles.map(r => `<option value="${RoleManager.getRoleValue(r)}" ${u.role === RoleManager.getRoleValue(r) || u.role === r.id ? 'selected' : ''}>${r.icon} ${r.nom}</option>`).join('')}
-                </select>
-              </td>
               <td><span class="status-badge ${u.actif ? 'status-paye' : 'status-annule'}">${u.actif ? '✅ Actif' : '❌ Inactif'}</span></td>
               <td>
                 <div class="action-btns">
@@ -2917,8 +2914,7 @@ const App = {
                   ${u.id !== Auth.getCurrentUser()?.id && u.role !== 'superadmin' ? `<button class="btn-icon" title="Activer/Désactiver" onclick="App.saToggleActive('${u.id}')">${u.actif ? '🔒' : '🔓'}</button>` : ''}
                 </div>
               </td>
-            </tr>`;
-          }).join('')}
+            </tr>`).join('') : '<tr><td colspan="4" class="empty-cell">Aucun administrateur secondaire.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -2929,16 +2925,6 @@ const App = {
         <button class="btn btn-danger" onclick="App.saWipeCloudDB()">🗑️ Purger les données opérationnelles</button>
       </div>
     </div>`;
-  },
-
-  async saAssignRole(userId, roleValue) {
-    if (!Auth.isSuperAdmin()) return;
-    if (roleValue === 'superadmin') { this.showToast('Le rôle SuperAdmin est réservé au compte initial.', 'error'); this.renderSuperAdmin(); return; }
-    const result = await UserManager.update(userId, { role: roleValue });
-    if (!result.success) { this.showToast(result.error, 'error'); this.renderSuperAdmin(); return; }
-    const ri = Auth.getRoleInfo(roleValue);
-    this.showToast(`Rôle ${ri.label} attribué.`, 'success');
-    this.renderSuperAdmin();
   },
 
   async saResetPassword(userId) {
@@ -3018,11 +3004,11 @@ const App = {
     });
     if (!ok2) return;
     try {
-      await firebase.functions().httpsCallable('purgeBusinessData')();
+      await DB.purgeBusinessData();
       localStorage.removeItem('GIS_state_cache');
       window.location.reload();
     } catch (error) {
-      console.error('[GIS] Business data purge failed:', error);
+      console.error('[GIS] Supabase business data purge failed:', error);
       this.showToast(error.message || 'Impossible de purger les données.', 'error');
     }
   }
@@ -3033,6 +3019,15 @@ const App = {
 // DÉMARRAGE
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
+  if (supabaseClient) {
+    supabaseClient.auth.onAuthStateChange(event => {
+      if (event === 'PASSWORD_RECOVERY') {
+        document.getElementById('login-screen').style.display = 'flex';
+        document.getElementById('app-shell').style.display = 'none';
+        App.showLoginTab('recovery');
+      }
+    });
+  }
   App.init();
   // Close modals on overlay click
   document.addEventListener('click', (e) => {

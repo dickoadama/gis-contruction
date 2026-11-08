@@ -1,45 +1,55 @@
 # GIS — Gestion intégrée de stock
 
-Application web de gestion de ventes, factures, devis, caisse et stocks de matériaux de construction.
+Application web de gestion de ventes, factures, devis, caisse et stocks de matériaux de construction. L’authentification, les données et la synchronisation temps réel reposent sur Supabase.
 
-## Utilisation locale
+## Configuration Supabase
 
-L’application utilise Firebase Authentication, Cloud Firestore et des fonctions callable. Servez le dossier avec un serveur HTTP local; l’ouverture directe de `index.html` (`file://`) ne permet pas l’authentification Firebase.
-
-## Configuration Firebase
-
-1. Utilisez un projet Firebase que vous administrez et activez **Authentication > E-mail/Mot de passe** ainsi que Firestore.
-2. Dans les paramètres Authentication, configurez une politique de mot de passe d’au moins 12 caractères et autorisez le domaine où l’application sera hébergée.
-3. Remplacez la configuration Web dans `js/data_v2.js` par celle de votre projet. La clé API Web Firebase est publique; restreignez-la aux domaines et API nécessaires. Ne placez jamais de clé de compte de service dans ce dépôt.
-4. Installez la CLI Firebase et connectez-vous, puis configurez le secret de bootstrap sans l’ajouter au dépôt :
+1. Créez un projet Supabase et copiez son URL ainsi que sa clé publique `anon`/`publishable` dans `js/supabase-config.js`. Cette clé peut être exposée au navigateur; ne mettez jamais la clé `service_role` dans ce fichier.
+2. Appliquez le schéma et les politiques de sécurité depuis la racine du dépôt :
 
    ```sh
-   firebase login
-   firebase functions:secrets:set GIS_BOOTSTRAP_TOKEN --project <PROJECT_ID>
+   supabase link --project-ref <PROJECT_REF>
+   supabase db push
    ```
 
-   Utilisez une valeur aléatoire forte et gardez-la hors du code source. Après le déploiement, publiez les fonctions et les règles :
+3. Configurez les URL d’application et de redirection dans **Authentication > URL Configuration**. Activez la confirmation des adresses e-mail.
+4. Créez le premier compte depuis l’écran d’inscription, confirmez son adresse, puis promouvez-le une seule fois dans l’éditeur SQL Supabase en remplaçant son adresse :
 
-   ```sh
-   firebase deploy --project <PROJECT_ID> --only firestore:rules,functions
+   ```sql
+   update public.users
+   set role = 'superadmin', actif = true
+   where id = (select id from auth.users where email = lower('superadmin@exemple.com'))
+     and not exists (select 1 from public.users where role = 'superadmin');
    ```
 
-5. Servez l’application sur un domaine autorisé, ouvrez **Premier démarrage : créer l’administrateur**, puis saisissez le secret, l’adresse e-mail et un mot de passe d’au moins 12 caractères. Le bootstrap ne fonctionne qu’une fois par projet Firestore.
-6. Après la création du SuperAdmin, supprimez ou faites tourner le secret `GIS_BOOTSTRAP_TOKEN` dans Firebase Secret Manager.
+   Vérifiez que la requête a modifié exactement une ligne. Les inscriptions ordinaires restent inactives jusqu’à ce qu’un administrateur leur attribue un rôle.
+
+## Fonction de gestion des comptes
+
+La création et la suppression des comptes passent par une fonction Edge qui vérifie le rôle de l’appelant et utilise la clé serveur uniquement côté Supabase :
+
+```sh
+supabase functions deploy manage-users
+supabase secrets set APP_URL=https://votre-domaine.example
+```
+
+Supabase fournit automatiquement `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KEY` à la fonction. Ne les ajoutez pas au dépôt. Ajoutez aussi l’URL de l’application aux URL de redirection autorisées pour les invitations et la réinitialisation des mots de passe.
+
+## Rôles
+
+- **SuperAdmin** : crée et active les comptes administrateurs depuis la console SuperAdmin.
+- **Administrateur** : gère les collègues, attribue les rôles métier et pilote les modules autorisés.
+- **Chauffeur** : accès au profil, aux messages et aux notifications; aucun accès à la caisse.
+- **Chargeur** : accès aux produits, au stock, aux réceptions et à l’inventaire.
+- **Caisse** : ventes, factures, devis, règlements et caisse.
+- **Gestionnaire de stock** : produits, stocks, inventaires, entrées et fournisseurs.
+
+Les rôles et permissions sont contrôlés par les politiques RLS de la migration, pas uniquement par l’interface.
+
+## Lancement local
+
+Servez le dossier avec un serveur HTTP local, puis ouvrez son URL dans le navigateur. L’authentification et la synchronisation nécessitent un projet Supabase configuré.
 
 ## Données existantes
 
-Le bootstrap refuse de s’exécuter si la collection `users` contient déjà des comptes. Aucun mot de passe ou compte de l’ancienne authentification locale n’est migré. Sauvegardez vos données et utilisez de préférence un projet Firebase neuf; toute migration de données doit être planifiée et vérifiée avant le déploiement des règles.
-
-Les règles Firestore protègent les accès par rôle. Ne remplacez pas ces règles par des règles publiques. Le client ne peut pas créer ou modifier directement les profils utilisateurs; ces opérations passent par les fonctions backend.
-
-## Fonctions backend
-
-Depuis le dossier `functions`, installez les dépendances et exécutez la vérification syntaxique :
-
-```sh
-npm ci
-npm run lint
-```
-
-Le runtime des fonctions est Node.js 22.
+Les données de l’ancien service ne sont pas transférées automatiquement. Les comptes doivent être recréés ou invités dans Supabase; les mots de passe existants ne sont pas exportables. Sauvegardez les données opérationnelles et planifiez leur import dans les tables Supabase avant de mettre l’application en production.

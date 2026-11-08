@@ -1,45 +1,39 @@
 # GIS — Gestion intégrée de stock
 
-Application web de gestion de ventes, factures, devis, caisse et stocks de matériaux de construction.
+Application de gestion des ventes, factures, devis, caisse et stocks de matériaux de construction.
 
-## Utilisation locale
+## Configuration du navigateur
 
-L’application utilise Firebase Authentication, Cloud Firestore et des fonctions callable. Servez le dossier avec un serveur HTTP local; l’ouverture directe de `index.html` (`file://`) ne permet pas l’authentification Firebase.
+Le projet utilise Supabase Auth, PostgreSQL, Row Level Security (RLS) et Realtime. Servez le dossier avec un serveur HTTP; l’ouverture directe en `file://` ne permet pas l’authentification.
 
-## Configuration Firebase
+Dans `js/supabase-config.js`, renseignez l’URL du projet et sa clé `anon`/`publishable`. Cette clé est publique et peut être incluse dans l’application. **N’ajoutez jamais la clé `service_role` au navigateur, au dépôt ou à un fichier distribué.**
 
-1. Utilisez un projet Firebase que vous administrez et activez **Authentication > E-mail/Mot de passe** ainsi que Firestore.
-2. Dans les paramètres Authentication, configurez une politique de mot de passe d’au moins 12 caractères et autorisez le domaine où l’application sera hébergée.
-3. Remplacez la configuration Web dans `js/data_v2.js` par celle de votre projet. La clé API Web Firebase est publique; restreignez-la aux domaines et API nécessaires. Ne placez jamais de clé de compte de service dans ce dépôt.
-4. Installez la CLI Firebase et connectez-vous, puis configurez le secret de bootstrap sans l’ajouter au dépôt :
+Dans Supabase, activez l’authentification par e-mail/mot de passe et ajoutez l’URL du site aux URL de redirection autorisées.
 
-   ```sh
-   firebase login
-   firebase functions:secrets:set GIS_BOOTSTRAP_TOKEN --project <PROJECT_ID>
-   ```
+## Installer la base et les fonctions
 
-   Utilisez une valeur aléatoire forte et gardez-la hors du code source. Après le déploiement, publiez les fonctions et les règles :
-
-   ```sh
-   firebase deploy --project <PROJECT_ID> --only firestore:rules,functions
-   ```
-
-5. Servez l’application sur un domaine autorisé, ouvrez **Premier démarrage : créer l’administrateur**, puis saisissez le secret, l’adresse e-mail et un mot de passe d’au moins 12 caractères. Le bootstrap ne fonctionne qu’une fois par projet Firestore.
-6. Après la création du SuperAdmin, supprimez ou faites tourner le secret `GIS_BOOTSTRAP_TOKEN` dans Firebase Secret Manager.
-
-## Données existantes
-
-Le bootstrap refuse de s’exécuter si la collection `users` contient déjà des comptes. Aucun mot de passe ou compte de l’ancienne authentification locale n’est migré. Sauvegardez vos données et utilisez de préférence un projet Firebase neuf; toute migration de données doit être planifiée et vérifiée avant le déploiement des règles.
-
-Les règles Firestore protègent les accès par rôle. Ne remplacez pas ces règles par des règles publiques. Le client ne peut pas créer ou modifier directement les profils utilisateurs; ces opérations passent par les fonctions backend.
-
-## Fonctions backend
-
-Depuis le dossier `functions`, installez les dépendances et exécutez la vérification syntaxique :
+Installez la CLI Supabase, puis depuis la racine du dépôt :
 
 ```sh
-npm ci
-npm run lint
+supabase login
+supabase link --project-ref vwcanlrctpqrfsxqitbj
+supabase db push
+supabase secrets set GIS_BOOTSTRAP_TOKEN="<jeton aléatoire fort>"
+supabase functions deploy admin-users
 ```
 
-Le runtime des fonctions est Node.js 22.
+Le jeton de bootstrap peut être généré avec Node.js :
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+Une fois la migration appliquée et la fonction déployée, ouvrez **Premier démarrage : créer l’administrateur** et fournissez ce jeton. L’opération n’est possible qu’une seule fois. Supprimez ensuite le secret avec `supabase secrets unset GIS_BOOTSTRAP_TOKEN`.
+
+La fonction `admin-users` utilise la clé de service uniquement côté serveur. Elle vérifie la session, le profil actif et les privilèges avant toute création, modification, désactivation ou suppression de compte.
+
+## Privilèges et données
+
+Les rôles et actions sont conservés dans `roles`; les profils Auth dans `profiles`; les données métier dans `app_records`. Les migrations SQL configurent les politiques RLS : les permissions sont contrôlées par PostgreSQL, pas seulement par les menus de l’interface. Les rôles peuvent gérer les pages et actions autorisées; la création d’administrateurs et les privilèges de gestion sont réservés au SuperAdmin.
+
+**Les données et comptes de l’ancien fournisseur ne sont pas importés automatiquement ni supprimés à distance.** Les mots de passe ne sont pas transférables tels quels; prévoyez un export et une migration séparés si les données doivent être conservées. La première installation Supabase démarre avec ses rôles prédéfinis et les données de démonstration initialisées par l’application.

@@ -21,27 +21,26 @@ const GIS_COMPANY = {
 };
 
 // ═══════════════════════════════════════════════════════════
-// FIREBASE CLOUD DB
+// SUPABASE CLOUD DB
 // ═══════════════════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "AIzaSyDaPvjKzcETOIJegwbyUpoyL3ZA3rr8670",
-  authDomain: "gis-materiaux.firebaseapp.com",
-  projectId: "gis-materiaux",
-  storageBucket: "gis-materiaux.firebasestorage.app",
-  messagingSenderId: "226197523599",
-  appId: "1:226197523599:web:19e893110570673264b4fa"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-
-// ─── Persistance locale Firestore (réouvertures quasi-instantanées) ───
-// Indisponible en file:// ou sur certains navigateurs → sans impact, on
-// retombe sur notre propre cache localStorage (voir DB.persistCache).
-try {
-  db.enablePersistence({ synchronizeTabs: true }).catch(err => {
-    console.warn('[GIS] Persistence Firestore indisponible:', err.code);
-  });
-} catch (e) { /* non supporté */ }
+const supabaseConfig = window.GIS_SUPABASE_CONFIG || {};
+function isPublicSupabaseKey(key) {
+  if (typeof key !== 'string') return false;
+  if (key.startsWith('sb_publishable_')) return true;
+  const parts = key.split('.');
+  if (parts.length !== 3) return false;
+  try {
+    const encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(encoded + '='.repeat((4 - encoded.length % 4) % 4)));
+    return claims.role === 'anon';
+  } catch (error) {
+    console.error('[GIS] Clé Supabase invalide:', error);
+    return false;
+  }
+}
+const supabaseClient = window.supabase && supabaseConfig.url && isPublicSupabaseKey(supabaseConfig.publishableKey)
+  ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.publishableKey)
+  : null;
 
 window.GIS_STATE = {
   products: [], users: [], clients: [], invoices: [], devis: [], stock_entries: [], fournisseurs: [], caisse_ops: [], messages: [], notifications: [], roles: []
@@ -118,7 +117,7 @@ const INITIAL_PRODUCTS = [
 ];
 
 // ═══════════════════════════════════════════════════════════
-// RÔLES INITIAUX (seedés en Firestore au premier démarrage)
+// RÔLES INITIAUX (seedés dans la migration Supabase)
 // ═══════════════════════════════════════════════════════════
 const INITIAL_ROLES = [
   {
@@ -169,122 +168,179 @@ const INITIAL_ROLES = [
 ];
 
 // ═══════════════════════════════════════════════════════════
-// DATABASE HELPER (CLOUD SYNCHRONIZED)
+// DATABASE HELPER (SUPABASE SYNCHRONIZED)
 // ═══════════════════════════════════════════════════════════
+const DATA_COLLECTIONS = Object.keys(window.GIS_STATE).filter(key => key !== 'users' && key !== 'roles');
+
+function roleFromRow(row) {
+  return {
+    id: row.id,
+    nom: row.nom,
+    icon: row.icon,
+    color: row.color,
+    isSystem: row.is_system,
+    pages: row.pages || [],
+    actions: row.actions || [],
+    createdAt: row.created_at
+  };
+}
+
+function roleToRow(role) {
+  return {
+    id: role.id,
+    nom: role.nom,
+    icon: role.icon,
+    color: role.color,
+    is_system: !!role.isSystem,
+    pages: role.pages || [],
+    actions: role.actions || [],
+    created_at: role.createdAt || new Date().toISOString()
+  };
+}
+
+function profileFromRow(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    prenom: row.prenom,
+    nom: row.nom,
+    username: row.username,
+    telephone: row.telephone || '',
+    role: row.role,
+    actif: row.actif,
+    createdAt: row.created_at
+  };
+}
+
+async function fetchAllPages(queryFactory) {
+  const rows = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await queryFactory().range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    if (!Array.isArray(data)) throw new Error('Réponse Supabase invalide.');
+    rows.push(...data);
+    if (data.length < pageSize) return rows;
+  }
+}
+
 const DB = {
   isCloudReady: false,
-  _cacheTimer: null,
   _cloudStarted: false,
-  _unsubscribers: [],
-
-  // ─── Cache local instantané (démarrage sans attendre le Cloud) ───
-  persistCache() {
-    clearTimeout(this._cacheTimer);
-    this._cacheTimer = setTimeout(() => {
-      try { localStorage.setItem('GIS_state_cache', JSON.stringify(window.GIS_STATE)); } catch (e) { /* quota dépassé */ }
-    }, 800);
-  },
+  _channel: null,
 
   reportCloudWriteError(operation, error) {
-    console.error(`[GIS] Cloud ${operation} failed:`, error);
+    console.error(`[GIS] Supabase ${operation} failed:`, error);
     if (window.App && typeof window.App.showToast === 'function') {
       window.App.showToast(`Échec de synchronisation (${operation}). Vérifiez vos droits et votre connexion.`, 'error');
     }
   },
 
-  hydrateFromCache() {
-    try {
-      const cached = JSON.parse(localStorage.getItem('GIS_state_cache'));
-      if (!cached) return false;
-      CLOUD_COLLECTIONS.forEach(col => {
-        if (Array.isArray(cached[col])) {
-          window.GIS_STATE[col] = col === 'users'
-            ? cached[col].map(({ password, ...user }) => user)
-            : cached[col];
-        }
-      });
-      return true;
-    } catch (e) { return false; }
+  isConfigured() {
+    return !!supabaseClient;
   },
 
-  // ─── Synchronisation cloud NON bloquante ──────────────────────
-  // Le callback n'est appelé qu'une fois (au premier chargement complet
-  // ou échec réseau) ; les mises à jour continues passent par
-  // App.onCloudUpdate() qui est débouncée côté UI.
-  initCloud(callback) {
-    const user = firebase.auth().currentUser;
-    if (!user || this._cloudStarted) return;
+  async initCloud(callback) {
+    const user = Auth.getCurrentUser();
+    if (!supabaseClient || !user || this._cloudStarted) return;
     this._cloudStarted = true;
-    let loaded = 0;
-    const totalListeners = CLOUD_COLLECTIONS.length + 2;
-    const onProgress = () => {
-      loaded++;
-      if (loaded >= totalListeners && !this.isCloudReady) {
-        this.isCloudReady = true;
-        if (typeof callback === 'function') callback();
-      }
-      this.persistCache();
-      if (window.App && typeof window.App.onCloudUpdate === 'function') window.App.onCloudUpdate();
-    };
-    const listen = (query, onData) => {
-      let initialized = false;
-      const unsubscribe = query.onSnapshot(snapshot => {
-        onData(snapshot);
-        if (!initialized) { initialized = true; onProgress(); }
-      }, error => {
-        console.warn('Firebase sync warning:', error);
-        if (!initialized) { initialized = true; onProgress(); }
-      });
-      this._unsubscribers.push(unsubscribe);
-    };
     try {
-      CLOUD_COLLECTIONS.forEach(col => {
-        if (col === 'messages' || col === 'notifications') return;
-        listen(db.collection(col), snapshot => {
-          window.GIS_STATE[col] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const [records, roles, profiles, invoiceProducts] = await Promise.all([
+        fetchAllPages(() => supabaseClient.from('app_records').select('collection,record_id,data')
+          .order('collection').order('record_id')),
+        fetchAllPages(() => supabaseClient.from('roles').select('*').order('id')),
+        fetchAllPages(() => Auth.isAdmin()
+          ? supabaseClient.from('profiles').select('*').order('created_at').order('id')
+          : supabaseClient.rpc('list_user_directory')),
+        fetchAllPages(() => supabaseClient.rpc('list_sales_catalog'))
+      ]);
+
+      DATA_COLLECTIONS.forEach(collection => {
+        window.GIS_STATE[collection] = records
+          .filter(record => record.collection === collection)
+          .map(record => ({ ...record.data, id: record.record_id }));
+      });
+      const products = new Map(window.GIS_STATE.products.map(product => [product.id, product]));
+      invoiceProducts.forEach(record => {
+        products.set(record.record_id, { ...record.data, id: record.record_id });
+      });
+      window.GIS_STATE.products = [...products.values()];
+      window.GIS_STATE.roles = roles.map(roleFromRow);
+      window.GIS_STATE.users = profiles.map(profileFromRow);
+      this._channel = supabaseClient
+        .channel(`gis-sync-${user.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'app_records' }, payload => {
+          const record = payload.new && payload.new.record_id ? payload.new : payload.old;
+          if (!record || !window.GIS_STATE[record.collection]) return;
+          const items = window.GIS_STATE[record.collection];
+          const index = items.findIndex(item => item.id === record.record_id);
+          if (payload.eventType === 'DELETE') {
+            if (index >= 0) items.splice(index, 1);
+          } else {
+            const item = { ...payload.new.data, id: payload.new.record_id };
+            if (index >= 0) items[index] = item;
+            else items.unshift(item);
+          }
+          if (window.App && typeof window.App.onCloudUpdate === 'function') window.App.onCloudUpdate();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'roles' }, payload => {
+          const row = payload.new && payload.new.id ? payload.new : payload.old;
+          const currentUser = Auth.getCurrentUser();
+          const assignedRoleId = currentUser
+            ? (currentUser.role.startsWith('ROLE_') ? currentUser.role : `ROLE_${currentUser.role}`)
+            : null;
+          if (row && row.id === assignedRoleId) {
+            window.location.reload();
+            return;
+          }
+          if (!row || payload.eventType === 'DELETE') {
+            window.GIS_STATE.roles = window.GIS_STATE.roles.filter(role => role.id !== row?.id);
+          } else {
+            const role = roleFromRow(payload.new);
+            const index = window.GIS_STATE.roles.findIndex(item => item.id === role.id);
+            if (index >= 0) window.GIS_STATE.roles[index] = role;
+            else window.GIS_STATE.roles.push(role);
+          }
+          if (window.App && typeof window.App.onCloudUpdate === 'function') window.App.onCloudUpdate();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, payload => {
+          const row = payload.new && payload.new.id ? payload.new : payload.old;
+          if (!row) return;
+          const currentUser = Auth.getCurrentUser();
+          if (currentUser && row.id === currentUser.id &&
+              (payload.eventType === 'DELETE' || payload.new.role !== currentUser.role || payload.new.actif !== true)) {
+            window.location.reload();
+            return;
+          }
+          const index = window.GIS_STATE.users.findIndex(item => item.id === row.id);
+          if (payload.eventType === 'DELETE') {
+            if (index >= 0) window.GIS_STATE.users.splice(index, 1);
+          } else {
+            const profile = profileFromRow(payload.new);
+            if (index >= 0) window.GIS_STATE.users[index] = profile;
+            else window.GIS_STATE.users.push(profile);
+          }
+          if (window.App && typeof window.App.onCloudUpdate === 'function') window.App.onCloudUpdate();
+        })
+        .subscribe((status, error) => {
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            this.reportCloudWriteError('temps réel', error || new Error(status));
+          }
         });
-      });
-      let receivedMessages = [];
-      let sentMessages = [];
-      const updateMessages = () => {
-        window.GIS_STATE.messages = [...new Map(
-          [...receivedMessages, ...sentMessages].map(message => [message.id, message])
-        ).values()];
-      };
-      listen(db.collection('messages').where('destinataireId', '==', user.uid), snapshot => {
-        receivedMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        updateMessages();
-      });
-      listen(db.collection('messages').where('expediteurId', '==', user.uid), snapshot => {
-        sentMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        updateMessages();
-      });
-      let personalNotifications = [];
-      let broadcastNotifications = [];
-      const updateNotifications = () => {
-        window.GIS_STATE.notifications = [...new Map(
-          [...personalNotifications, ...broadcastNotifications].map(notification => [notification.id, notification])
-        ).values()];
-      };
-      listen(db.collection('notifications').where('userId', '==', user.uid), snapshot => {
-        personalNotifications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        updateNotifications();
-      });
-      listen(db.collection('notifications').where('userId', '==', null), snapshot => {
-        broadcastNotifications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        updateNotifications();
-      });
-    } catch (e) {
-      console.error("Critical Firebase Error:", e);
-      this._cloudStarted = false;
+
       this.isCloudReady = true;
       if (typeof callback === 'function') callback();
+      if (window.App && typeof window.App.onCloudUpdate === 'function') window.App.onCloudUpdate();
+    } catch (error) {
+      this._cloudStarted = false;
+      this.isCloudReady = false;
+      this.reportCloudWriteError('chargement', error);
     }
   },
 
   stopCloud() {
-    this._unsubscribers.forEach(unsubscribe => unsubscribe());
-    this._unsubscribers = [];
+    if (this._channel && supabaseClient) supabaseClient.removeChannel(this._channel);
+    this._channel = null;
     this._cloudStarted = false;
     this.isCloudReady = false;
   },
@@ -303,12 +359,28 @@ const DB = {
     if (CLOUD_COLLECTIONS.includes(key)) {
       const id = item.id || generateId();
       item.id = id;
-      db.collection(key).doc(id).set(item).catch(error => {
-        window.GIS_STATE[key] = window.GIS_STATE[key].filter(existing => existing.id !== id);
-        this.persistCache();
-        this.reportCloudWriteError('ajout', error);
-      });
-      if (!window.GIS_STATE[key].find(i => i.id === id)) window.GIS_STATE[key].unshift(item);
+      if (key === 'users') {
+        this.reportCloudWriteError('ajout utilisateur', new Error('Les profils doivent être créés par la fonction d’administration.'));
+        return null;
+      }
+      const previousIndex = window.GIS_STATE[key].findIndex(existing => existing.id === id);
+      const previousItem = previousIndex >= 0 ? window.GIS_STATE[key][previousIndex] : null;
+      if (previousIndex >= 0) window.GIS_STATE[key][previousIndex] = item;
+      else window.GIS_STATE[key].unshift(item);
+      const request = key === 'roles'
+        ? supabaseClient.from('roles').upsert(roleToRow(item), { onConflict: 'id' })
+        : supabaseClient.from('app_records').upsert({
+          collection: key,
+          record_id: id,
+          data: item
+        }, { onConflict: 'collection,record_id' });
+      request.then(({ error }) => {
+        if (error) {
+          if (previousItem) window.GIS_STATE[key][previousIndex] = previousItem;
+          else window.GIS_STATE[key] = window.GIS_STATE[key].filter(existing => existing.id !== id);
+          this.reportCloudWriteError('ajout', error);
+        }
+      }).catch(error => this.reportCloudWriteError('ajout', error));
       return item;
     } else {
       const items = this.getAll(key);
@@ -320,13 +392,25 @@ const DB = {
   update(key, id, updates) {
     if (CLOUD_COLLECTIONS.includes(key)) {
       const idx = window.GIS_STATE[key].findIndex(i => i.id === id);
+      if (idx === -1) return null;
       const previous = idx === -1 ? null : window.GIS_STATE[key][idx];
       if (idx !== -1) window.GIS_STATE[key][idx] = { ...previous, ...updates };
-      db.collection(key).doc(id).update(updates).catch(error => {
+      if (key === 'users') {
+        this.reportCloudWriteError('modification utilisateur', new Error('Les profils doivent être modifiés par la fonction d’administration.'));
         if (previous) window.GIS_STATE[key][idx] = previous;
-        this.persistCache();
-        this.reportCloudWriteError('modification', error);
-      });
+        return null;
+      }
+      const request = key === 'roles'
+        ? supabaseClient.from('roles').update(roleToRow(window.GIS_STATE[key][idx])).eq('id', id).select('id').maybeSingle()
+        : supabaseClient.from('app_records').update({
+          data: window.GIS_STATE[key][idx]
+        }).eq('collection', key).eq('record_id', id).select('record_id').maybeSingle();
+      request.then(({ data, error }) => {
+        if (error || !data) {
+          if (previous) window.GIS_STATE[key][idx] = previous;
+          this.reportCloudWriteError('modification', error || new Error('Enregistrement absent ou accès refusé.'));
+        }
+      }).catch(error => this.reportCloudWriteError('modification', error));
       return window.GIS_STATE[key][idx];
     } else {
       const items = this.getAll(key);
@@ -338,12 +422,22 @@ const DB = {
   delete(key, id) {
     if (CLOUD_COLLECTIONS.includes(key)) {
       const previous = window.GIS_STATE[key].find(item => item.id === id);
+      if (key === 'users') {
+        this.reportCloudWriteError('suppression utilisateur', new Error('Les profils doivent être supprimés par la fonction d’administration.'));
+        return;
+      }
       window.GIS_STATE[key] = window.GIS_STATE[key].filter(i => i.id !== id);
-      db.collection(key).doc(id).delete().catch(error => {
-        if (previous && !window.GIS_STATE[key].some(item => item.id === id)) {
-          window.GIS_STATE[key].push(previous);
+      const request = key === 'roles'
+        ? supabaseClient.from('roles').delete().eq('id', id).select('id').maybeSingle()
+        : supabaseClient.from('app_records').delete().eq('collection', key).eq('record_id', id).select('record_id').maybeSingle();
+      request.then(({ data, error }) => {
+        if (error || !data) {
+          if (previous && !window.GIS_STATE[key].some(item => item.id === id)) {
+            window.GIS_STATE[key].push(previous);
+          }
+          this.reportCloudWriteError('suppression', error || new Error('Enregistrement absent ou accès refusé.'));
         }
-        this.persistCache();
+      }).catch(error => {
         this.reportCloudWriteError('suppression', error);
       });
     } else {

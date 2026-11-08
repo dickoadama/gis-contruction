@@ -1,8 +1,9 @@
-const CACHE_NAME = 'gis-cache-v10';
+const CACHE_NAME = 'gis-cache-v11';
 const urlsToCache = [
   './',
   './index.html',
   './css/style.css',
+  './js/supabase-config.js',
   './js/data_v2.js',
   './js/auth_v2.js',
   './js/stock.js',

@@ -16,14 +16,17 @@ const App = {
   selectedInvoiceType: 'normale',
   msgTab: 'recu',
 
-  // ─── Initialisation (démarrage instantané) ─────────────────
-  // 1. Restauration du cache local → UI affichée immédiatement
-  // 2. Synchronisation Firestore en arrière-plan, sans blocage
+  // ─── Initialisation ────────────────────────────────────────
+  // Restaure la session Supabase, puis charge les données cloud.
   async init() {
     document.getElementById('app-shell').style.display = 'none';
     document.getElementById('login-screen').style.display = 'none';
     this.loadCart();
-    DB.hydrateFromCache();
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith('GIS_state_cache')) localStorage.removeItem(key);
+    }
+    localStorage.removeItem('GIS_pending_profile');
     if (!this._networkListenersInstalled) {
       window.addEventListener('online', () => this.updateNetworkStatus());
       window.addEventListener('offline', () => this.updateNetworkStatus());
@@ -31,12 +34,19 @@ const App = {
     }
     this.updateNetworkStatus();
 
+    if (!DB.isConfigured()) {
+      this.showLogin();
+      document.getElementById('login-error').textContent =
+        'Configurez l’URL et une clé anon/publishable publique dans js/supabase-config.js.';
+      return;
+    }
+
     try {
       await Auth.restoreSession();
     } catch (error) {
-      console.error('[GIS] Restoring Firebase session failed:', error);
+      console.error('[GIS] Restoring Supabase session failed:', error);
       this.showLogin();
-      this.showToast('Connexion Firebase indisponible. Vérifiez votre réseau puis réessayez.', 'error');
+      this.showToast('Connexion Supabase indisponible. Vérifiez votre réseau puis réessayez.', 'error');
       return;
     }
     if (!Auth.isLoggedIn()) { this.showLogin(); this.updateSyncHint(); return; }
@@ -90,9 +100,9 @@ const App = {
     const status = document.getElementById('network-status');
     if (!status) return;
     const online = navigator.onLine;
-    status.textContent = online ? 'En ligne' : 'Hors ligne · données locales';
+    status.textContent = online ? 'En ligne' : 'Hors ligne · synchronisation suspendue';
     status.classList.toggle('offline', !online);
-    status.setAttribute('aria-label', online ? 'Connexion Internet disponible' : 'Hors ligne, données locales disponibles');
+    status.setAttribute('aria-label', online ? 'Connexion Internet disponible' : 'Hors ligne, synchronisation suspendue');
   },
 
   // ─── Login ───────────────────────────────────────────────
@@ -159,11 +169,7 @@ const App = {
   async handleLogin() {
     const email = document.getElementById('login-username').value.trim().toLowerCase();
     const password = document.getElementById('login-password').value;
-    let pendingProfile = null;
-    try { pendingProfile = JSON.parse(localStorage.getItem('GIS_pending_profile')); } catch (error) {
-      console.warn('[GIS] Pending registration profile is invalid:', error);
-    }
-    const result = await Auth.login(email, password, pendingProfile);
+    const result = await Auth.login(email, password);
     if (result.success) { this.showApp(); this.navigate('dashboard'); }
     else { document.getElementById('login-error').textContent = result.error; }
     if (result.success) this.startCloudSync();
@@ -2157,7 +2163,7 @@ const App = {
   async resetDB() {
     const ok1 = await GISDialog.confirm({
       title: 'Réinitialiser les données',
-      message: 'Toutes les données locales (cache, session, panier) seront supprimées. Cette action est irréversible.',
+      message: 'Toutes les données stockées sur cet appareil (session, panier et paramètres) seront supprimées. Cette action est irréversible.',
       icon: '🗑️', confirmLabel: 'Continuer'
     });
     if (!ok1) return;
@@ -2761,7 +2767,7 @@ const App = {
           <div class="card-header">
             <h3>${r.icon || '👤'} ${r.nom} ${r.isSystem ? '<span class="badge badge-info">Système</span>' : ''}</h3>
             <div class="action-btns">
-              ${Auth.isAdmin() ? `<button class="btn-icon" title="Modifier" onclick="App.openRoleModal('${r.id}')">✏️</button>` : ''}
+              ${Auth.isAdmin() && (r.id !== 'ROLE_admin' || Auth.isSuperAdmin()) ? `<button class="btn-icon" title="Modifier" onclick="App.openRoleModal('${r.id}')">✏️</button>` : ''}
               ${!r.isSystem && Auth.isAdmin() ? `<button class="btn-icon text-danger" title="Supprimer" onclick="App.deleteRole('${r.id}')">🗑️</button>` : ''}
             </div>
           </div>
@@ -2810,9 +2816,22 @@ const App = {
   },
 
   openRoleModal(id = null) {
+    if (id === 'ROLE_admin' && !Auth.isSuperAdmin()) {
+      this.showToast('Seul le SuperAdmin peut modifier le rôle Administrateur.', 'error');
+      return;
+    }
     document.getElementById('role-modal-title').textContent = id ? 'Modifier le Rôle' : 'Nouveau Rôle';
     document.getElementById('role-edit-id').value = id || '';
     document.querySelectorAll('.role-page-cb, .role-action-cb').forEach(cb => cb.checked = false);
+    const adminOnlyActions = ['manage_users', 'manage_roles', 'manage_company'];
+    document.querySelectorAll('.role-action-cb').forEach(cb => {
+      const label = cb.closest('label');
+      if (label) {
+        label.style.display = adminOnlyActions.includes(cb.value) && id !== 'ROLE_admin'
+          ? 'none'
+          : '';
+      }
+    });
     const role = id ? RoleManager.getById(id) : null;
     if (role) {
       document.getElementById('role-nom').value = role.nom || '';
@@ -3018,8 +3037,7 @@ const App = {
     });
     if (!ok2) return;
     try {
-      await firebase.functions().httpsCallable('purgeBusinessData')();
-      localStorage.removeItem('GIS_state_cache');
+      await invokeAdmin('purge_business_data');
       window.location.reload();
     } catch (error) {
       console.error('[GIS] Business data purge failed:', error);

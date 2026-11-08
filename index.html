@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="GIS — Gestion Intégrée de Stock pour matériaux de construction et ciments. Facturation, gestion de stock, caisse, devis et inventaire.">
+  <meta name="theme-color" content="#6C63FF">
+  <title>GIS — Gestion Matériaux de Construction</title>
+  <!-- Accélère la prise de contact avec les CDN (poignées TLS en parallèle) -->
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+  <link rel="dns-prefetch" href="https://firestore.googleapis.com">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/3039/3039396.png">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;600;700;900&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════
+     ÉLÉMENTS FLOTTANTS DE FOND (Orbes atmosphériques)
+     ═══════════════════════════════════════════════════════ -->
+<div class="floating-orb" style="width:500px;height:500px;background:radial-gradient(circle,rgba(124,111,255,0.12),transparent 70%);top:-150px;left:-150px;animation-duration:14s;"></div>
+<div class="floating-orb" style="width:400px;height:400px;background:radial-gradient(circle,rgba(0,229,184,0.09),transparent 70%);bottom:-100px;right:-100px;animation-duration:18s;animation-delay:-6s;"></div>
+<div class="floating-orb" style="width:300px;height:300px;background:radial-gradient(circle,rgba(255,107,157,0.07),transparent 70%);top:40%;right:15%;animation-duration:11s;animation-delay:-3s;"></div>
+
+<!-- ═══════════════════════════════════════════════════════
+     ÉCRAN DE CONNEXION
+     ═══════════════════════════════════════════════════════ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-brand">GIS</div>
+      <div class="login-subtitle">Gestion Intégrée de Stock</div>
+    </div>
+
+    <!-- TABS -->
+    <div style="display:flex; border-bottom: 2px solid #333; margin-bottom: 20px;">
+      <button id="tab-login" onclick="App.showLoginTab('login')" style="flex:1; background:none; border:none; color:#6C63FF; padding:10px; font-weight:700; border-bottom: 3px solid #6C63FF; cursor:pointer;">Connexion</button>
+      <button id="tab-register" onclick="App.showLoginTab('register')" style="flex:1; background:none; border:none; color:#888; padding:10px; font-weight:700; border-bottom: 3px solid transparent; cursor:pointer;">Inscription</button>
+    </div>
+
+    <!-- CONNEXION FORM -->
+    <div id="form-login" class="login-form">
+      <div class="form-group">
+        <label>Adresse e-mail</label>
+        <input type="email" id="login-username" class="login-input" placeholder="vous@exemple.com" onkeydown="if(event.key==='Enter')document.getElementById('login-password').focus()" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Mot de passe</label>
+        <input type="password" id="login-password" class="login-input" placeholder="Votre mot de passe" onkeydown="if(event.key==='Enter')App.handleLogin()" autocomplete="current-password">
+      </div>
+      <div style="text-align:right; margin-top:6px; margin-bottom:18px;">
+        <a href="#" onclick="App.showLoginTab('forgot')" style="color:#8f8aff; font-size:13px; text-decoration:none;">Mot de passe oublié ?</a>
+      </div>
+      <div id="login-error" class="login-error"></div>
+      <button class="login-btn" onclick="App.handleLogin()">🔐 &nbsp; Se connecter</button>
+    </div>
+
+    <!-- INSCRIPTION FORM -->
+    <div id="form-register" class="login-form" style="display:none;">
+      <div class="form-group">
+        <label>Prénom & Nom</label>
+        <div style="display:flex; gap:10px;">
+          <input type="text" id="reg-prenom" class="login-input" placeholder="Prénom" style="flex:1">
+          <input type="text" id="reg-nom" class="login-input" placeholder="Nom" style="flex:1">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Identifiant souhaité</label>
+        <input type="text" id="reg-username" class="login-input" placeholder="ex: jdupont" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Adresse e-mail</label>
+        <input type="email" id="reg-email" class="login-input" placeholder="vous@exemple.com" autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label>Mot de passe</label>
+        <input type="password" id="reg-password" class="login-input" placeholder="12 caractères minimum" autocomplete="new-password">
+      </div>
+      <div style="padding:8px 10px;background:rgba(108,99,255,0.08);border:1px solid rgba(108,99,255,0.2);border-radius:6px;font-size:11px;color:#9aaec4;margin-bottom:4px;">
+        ℹ️ Votre compte sera créé avec un accès limité. Un <strong style="color:#6C63FF">Administrateur</strong> devra vous attribuer un rôle pour activer vos accès.
+      </div>
+      <div id="reg-error" class="login-error"></div>
+      <button class="login-btn" onclick="App.handleRegister()">📝 &nbsp; S'inscrire</button>
+    </div>
+
+    <!-- FORGOT PASSWORD FORM -->
+    <div id="form-forgot" class="login-form" style="display:none;">
+      <p style="font-size:13px; color:#aaa; margin-bottom:15px;">Entrez l'adresse e-mail associée au compte. Si elle est enregistrée, vous recevrez un lien sécurisé pour choisir un nouveau mot de passe.</p>
+      <div class="form-group">
+        <label>Adresse e-mail</label>
+        <input type="email" id="forgot-username" class="login-input" placeholder="vous@exemple.com" autocomplete="email">
+      </div>
+      <button class="login-btn" onclick="App.handleForgot()">📩 &nbsp; Envoyer la demande</button>
+      <div style="text-align:center; margin-top:15px;">
+        <a href="#" onclick="App.showLoginTab('login')" style="color:#6C63FF; font-size:12px; text-decoration:none;">⬅ Retour à la connexion</a>
+      </div>
+    </div>
+
+    <!-- Initialisation sécurisée du premier administrateur -->
+    <div id="form-bootstrap" class="login-form" style="display:none;">
+      <p style="font-size:13px;color:#aaa;margin-bottom:8px">Réservé au premier démarrage. La clé de configuration est fournie séparément par Firebase.</p>
+      <div class="form-group"><label>Prénom</label><input type="text" id="boot-prenom" class="login-input" autocomplete="given-name"></div>
+      <div class="form-group"><label>Nom</label><input type="text" id="boot-nom" class="login-input" autocomplete="family-name"></div>
+      <div class="form-group"><label>Identifiant</label><input type="text" id="boot-username" class="login-input" autocomplete="username"></div>
+      <div class="form-group"><label>Adresse e-mail</label><input type="email" id="boot-email" class="login-input" autocomplete="email"></div>
+      <div class="form-group"><label>Mot de passe (12 caractères minimum)</label><input type="password" id="boot-password" class="login-input" autocomplete="new-password"></div>
+      <div class="form-group"><label>Clé de configuration Firebase</label><input type="password" id="boot-token" class="login-input" autocomplete="off"></div>
+      <div id="bootstrap-error" class="login-error"></div>
+      <button class="login-btn" onclick="App.handleBootstrap()">🔐 &nbsp; Configurer l'administrateur</button>
+      <div style="text-align:center;margin-top:12px">
+        <a href="#" onclick="App.showLoginTab('login');return false" style="color:#6C63FF;font-size:12px;text-decoration:none">⬅ Retour à la connexion</a>
+      </div>
+    </div>
+
+    <!-- Aucun identifiant de démonstration ni mot de passe codé en dur -->
+    <div class="login-hints" style="margin-top:20px;">
+      <p>Les comptes sont gérés par Firebase Authentication.</p>
+      <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
+        <a href="#" onclick="App.showLoginTab('bootstrap');return false" style="color:#8f8aff;font-size:12px;text-decoration:none;">Premier démarrage : créer l'administrateur</a>
+      </div>
+    </div>
+
+    <!-- Indicateur de synchronisation cloud (discret, ne bloque jamais) -->
+    <div id="login-sync-hint" style="text-align:center; font-size:11px; color:#8888aa; margin-top:12px; min-height:14px;"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     APPLICATION PRINCIPALE
+     ═══════════════════════════════════════════════════════ -->
+<div id="app-shell" style="display:none">
+
+  <!-- ─── SIDEBAR ─────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <!-- Logo -->
+    <div class="sidebar-logo">
+      <div>
+        <div class="sidebar-brand">GIS</div>
+        <div class="sidebar-tagline">Matériaux de Construction</div>
+      </div>
+    </div>
+
+    <!-- User Info -->
+    <div class="sidebar-user">
+      <div class="user-avatar" id="sidebar-avatar">AD</div>
+      <div>
+        <div class="sidebar-user-name" id="sidebar-user-name">Administrateur</div>
+        <div class="sidebar-user-role" id="sidebar-user-role">Admin</div>
+      </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav id="sidebar-nav"></nav>
+
+    <!-- Logout -->
+    <div class="sidebar-footer">
+      <button class="logout-btn" onclick="Auth.logout()">
+        🚪 &nbsp; Déconnexion
+      </button>
+    </div>
+  </aside>
+
+  <!-- Overlay du tiroir mobile (clic pour fermer) -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="App.closeSidebar()"></div>
+
+  <!-- ─── ZONE PRINCIPALE ──────────────────────────────── -->
+  <div class="main-area">
+
+    <!-- Header -->
+    <header class="header">
+      <button class="menu-toggle" id="menu-toggle" title="Menu" aria-label="Ouvrir le menu" onclick="App.toggleSidebar()">☰</button>
+      <h1 class="header-title" id="page-title">Tableau de bord</h1>
+      <div class="header-actions">
+        <div id="network-status" class="network-status" role="status" aria-live="polite"></div>
+
+        <!-- Messages -->
+        <button class="header-btn" title="Messages" onclick="App.navigate('messages')">
+          ✉️
+          <span class="header-badge" id="msg-badge-header" style="display:none"></span>
+        </button>
+
+        <!-- Notifications -->
+        <button class="header-btn" title="Notifications" onclick="App.navigate('notifications')">
+          🔔
+          <span class="header-badge" id="notif-badge-header" style="display:none"></span>
+        </button>
+
+        <!-- Panier -->
+        <button class="header-btn" title="Panier" onclick="App.navigate('panier')">
+          🛒
+          <span class="header-badge" id="cart-badge-header" style="display:none"></span>
+        </button>
+
+        <!-- User Profile -->
+        <div class="header-user" onclick="App.navigate('profil')">
+          <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6C63FF,#00D4AA);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff" id="header-avatar">A</div>
+          <div class="header-user-info">
+            <div class="header-user-name" id="header-user-name">Admin</div>
+            <div class="header-user-role" id="header-user-role">Administrateur</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="main-content">
+      <div class="page-loading">
+        <div class="spinner"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ─── TOAST ─────────────────────────────────────────── -->
+<div id="toast" class="toast"></div>
+
+<!-- ═══════════════════════════════════════════════════════
+     BOUTONS FLOTTANTS (FABs)
+     ═══════════════════════════════════════════════════════ -->
+<button class="fab-invoice" id="fab-invoice" title="Nouvelle Facture rapide" style="display:none">
+  🧾
+</button>
+<button class="fab-help" id="fab-help" title="Aide & Raccourcis" onclick="GISDialog.showHelp()" style="display:none">
+  ✨
+</button>
+
+<!-- ═══════════════════════════════════════════════════════
+     BOÎTE DE DIALOGUE PREMIUM
+     ═══════════════════════════════════════════════════════ -->
+<div id="gis-dialog" class="dialog-overlay" style="display:none" onclick="GISDialog.handleOverlayClick(event)">
+  <div class="dialog-box" id="gis-dialog-box">
+    <div class="dialog-icon-area">
+      <div class="dialog-icon" id="gis-dialog-icon">❓</div>
+      <div class="dialog-title" id="gis-dialog-title">Titre</div>
+    </div>
+    <div class="dialog-message" id="gis-dialog-message">Message</div>
+    <div class="dialog-input-area" id="gis-dialog-input-area" style="display:none">
+      <input type="text" id="gis-dialog-input" class="login-input" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();GISDialog._onConfirm();}">
+    </div>
+    <div class="dialog-footer" id="gis-dialog-footer">
+      <button class="btn btn-outline" onclick="GISDialog.cancel()">Annuler</button>
+      <button class="btn btn-primary" id="gis-dialog-confirm" onclick="GISDialog._onConfirm()">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCRIPTS (ordre important)
+     ═══════════════════════════════════════════════════════ -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
+<!-- html2pdf n'est PLUS chargé ici : il est téléchargé à la demande
+     à la première impression (voir Invoices._exportPdf) → démarrage plus léger -->
+<script src="js/data_v2.js"></script>
+<script src="js/auth_v2.js"></script>
+<script src="js/stock.js?v=2"></script>
+<script src="js/caisse.js?v=2"></script>
+<script src="js/invoices.js?v=2"></script>
+<script src="js/app_v2.js"></script>
+
+<script>
+  // ─── Mettre à jour l'avatar header après connexion ──────
+  const _origShowApp = App.showApp.bind(App);
+  App.showApp = function() {
+    _origShowApp();
+    const u = Auth.getCurrentUser();
+    if (u) {
+      const initials = (u.prenom[0] || '') + (u.nom[0] || '');
+      const ri = Auth.getRoleInfo(u.role);
+      document.getElementById('header-avatar').textContent = initials;
+      document.getElementById('header-user-name').textContent = `${u.prenom} ${u.nom}`;
+      document.getElementById('header-user-role').textContent = ri.label;
+      document.getElementById('sidebar-avatar').textContent = initials;
+    }
+    // Afficher les FABs quand l'app est connectée
+    document.getElementById('fab-invoice').style.display = 'flex';
+    document.getElementById('fab-help').style.display = 'flex';
+  };
+
+  // ─── FAB Invoice ─────────────────────────────────────────
+  document.getElementById('fab-invoice').addEventListener('click', function() {
+    if (typeof App !== 'undefined' && App.navigate) {
+      App.navigate('factures');
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // SYSTÈME DE BOÎTE DE DIALOGUE PREMIUM — GISDialog
+  // ═══════════════════════════════════════════════════════
+  const GISDialog = {
+    _resolve: null,
+    _mode: 'confirm',   // 'confirm' | 'prompt'
+
+    /**
+     * Affiche une boîte de dialogue configurable.
+     * @param {Object} opts - title, message, icon, type, confirmLabel, cancelLabel,
+     *                        hideCancelBtn, input, inputType, inputValue, inputPlaceholder
+     * @returns {Promise<boolean|string|null>}
+     */
+    show(opts = {}) {
+      const {
+        title       = 'Confirmation',
+        message     = 'Êtes-vous sûr de vouloir continuer ?',
+        icon        = '❓',
+        type        = 'primary',       // primary | success | danger | warning | info
+        confirmLabel = 'Confirmer',
+        cancelLabel  = 'Annuler',
+        hideCancelBtn = false,
+        input        = false,
+        inputType    = 'text',
+        inputValue   = '',
+        inputPlaceholder = ''
+      } = opts;
+
+      this._mode = input ? 'prompt' : 'confirm';
+
+      document.getElementById('gis-dialog-title').textContent   = title;
+      document.getElementById('gis-dialog-message').textContent  = message;
+
+      const iconEl = document.getElementById('gis-dialog-icon');
+      iconEl.textContent = icon;
+      iconEl.className   = `dialog-icon ${type}`;
+
+      const confirmBtn = document.getElementById('gis-dialog-confirm');
+      confirmBtn.textContent  = confirmLabel;
+      confirmBtn.className    = `btn btn-${type}`;
+
+      const footer = document.getElementById('gis-dialog-footer');
+      const cancelBtn = footer.querySelector('.btn-outline');
+      cancelBtn.textContent = cancelLabel;
+      cancelBtn.style.display = hideCancelBtn ? 'none' : '';
+
+      const inputArea = document.getElementById('gis-dialog-input-area');
+      const inputEl   = document.getElementById('gis-dialog-input');
+      if (input) {
+        inputArea.style.display = 'block';
+        inputEl.type = inputType;
+        inputEl.value = inputValue;
+        inputEl.placeholder = inputPlaceholder;
+      } else {
+        inputArea.style.display = 'none';
+      }
+
+      document.getElementById('gis-dialog').style.display = 'flex';
+      setTimeout(() => {
+        if (input) { inputEl.focus(); inputEl.select(); }
+        else confirmBtn.focus();
+      }, 60);
+
+      return new Promise(resolve => { this._resolve = resolve; });
+    },
+
+    /** Confirmation asynchrone — résout true (confirmé) ou false (annulé) */
+    confirm(opts) {
+      if (typeof opts === 'string') opts = { title: opts, message: arguments[1] };
+      return this.show({ icon: '⚠️', type: 'danger', confirmLabel: 'Confirmer', ...opts });
+    },
+
+    /** Saisie asynchrone — résout la chaîne saisie, ou null si annulé */
+    prompt(opts) {
+      if (typeof opts === 'string') opts = { title: opts };
+      return this.show({ icon: '✏️', type: 'primary', confirmLabel: 'Valider', input: true, ...opts });
+    },
+
+    /** Déclenché par le bouton de confirmation */
+    _onConfirm() {
+      const val = this._mode === 'prompt'
+        ? document.getElementById('gis-dialog-input').value
+        : true;
+      this._close(val);
+    },
+
+    cancel() { this._close(this._mode === 'prompt' ? null : false); },
+
+    _close(val) {
+      document.getElementById('gis-dialog').style.display = 'none';
+      const r = this._resolve;
+      this._resolve = null;
+      if (r) r(val);
+    },
+
+    handleOverlayClick(e) {
+      if (e.target.id === 'gis-dialog') this.cancel();
+    },
+
+    /** Boîte de succès simple */
+    success(title, message) {
+      return this.show({ title, message, icon: '✅', type: 'success', confirmLabel: 'Super !', hideCancelBtn: true });
+    },
+
+    /** Boîte d'alerte */
+    alert(title, message) {
+      return this.show({ title, message, icon: 'ℹ️', type: 'info', confirmLabel: 'Compris', hideCancelBtn: true });
+    },
+
+    /** Boîte d'aide avec les raccourcis */
+    showHelp() {
+      return this.show({
+        title: 'Raccourcis GIS',
+        message: '🧾 FAB vert → Nouvelle Facture\n✨ FAB violet → Cette aide\n🛒 Icône panier → Panier rapide\n🔔 Cloche → Notifications\nConsultez la sidebar pour naviguer entre les modules.',
+        icon: '✨',
+        type: 'primary',
+        confirmLabel: 'Fermer',
+        hideCancelBtn: true
+      });
+    }
+  };
+
+  // Exposer globalement
+  window.GISDialog = GISDialog;
+
+  // Fermeture du dialogue par touche Escape
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      const dlg = document.getElementById('gis-dialog');
+      if (dlg && dlg.style.display !== 'none') { GISDialog.cancel(); return; }
+      if (window.App && App.closeSidebar) App.closeSidebar();
+    }
+  });
+
+  // ─── Enregistrement du Service Worker (mode hors-ligne PWA) ──────
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('sw.js').catch(function(err) {
+        console.warn('Service Worker non enregistré:', err);
+      });
+    });
+  }
+</script>
+
+</body>
+</html>

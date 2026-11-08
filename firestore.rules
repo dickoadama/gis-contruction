@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function hasProfile() {
+      return signedIn() && exists(userPath());
+    }
+
+    function profile() {
+      return get(userPath()).data;
+    }
+
+    function activeUser() {
+      return hasProfile() && profile().actif == true;
+    }
+
+    function isSuperAdmin() {
+      return activeUser() && profile().role == 'superadmin';
+    }
+
+    function isAdmin() {
+      return activeUser() && profile().role in ['admin', 'superadmin'];
+    }
+
+    function roleDocumentId() {
+      return profile().role.matches('^ROLE_.*')
+        ? profile().role
+        : 'ROLE_' + profile().role;
+    }
+
+    function hasAction(action) {
+      let rolePath = /databases/$(database)/documents/roles/$(roleDocumentId());
+      return activeUser() && (
+        isAdmin() ||
+        (exists(rolePath) && get(rolePath).data.actions is list &&
+          get(rolePath).data.actions.hasAny([action]))
+      );
+    }
+
+    function canRead(collection) {
+      return collection == 'products'
+          ? hasAction('manage_products') || hasAction('manage_stock')
+        : collection == 'stock_entries' || collection == 'fournisseurs'
+          ? hasAction('manage_stock')
+        : collection == 'invoices'
+          ? hasAction('create_invoice') || hasAction('delete_invoice') || hasAction('view_reports')
+        : collection == 'devis'
+          ? hasAction('create_devis')
+        : collection == 'clients'
+          ? hasAction('create_invoice') || hasAction('create_devis')
+        : collection == 'caisse_ops'
+          ? hasAction('view_caisse')
+        : false;
+    }
+
+    function canWrite(collection) {
+      return collection == 'products'
+          ? hasAction('manage_products') || hasAction('manage_stock')
+        : collection == 'stock_entries' || collection == 'fournisseurs'
+          ? hasAction('manage_stock')
+        : collection == 'invoices'
+          ? hasAction('create_invoice')
+        : collection == 'devis'
+          ? hasAction('create_devis')
+        : collection == 'clients'
+          ? hasAction('create_invoice') || hasAction('create_devis')
+        : collection == 'caisse_ops'
+          ? hasAction('view_caisse') || hasAction('create_invoice')
+        : false;
+    }
+
+    match /users/{userId} {
+      allow read: if activeUser();
+      allow create, update, delete: if false;
+    }
+
+    match /usernames/{username} {
+      allow read, write: if false;
+    }
+
+    match /system/{documentId} {
+      allow read, write: if false;
+    }
+
+    match /roles/{roleId} {
+      allow read: if activeUser();
+      allow create, update, delete: if hasAction('manage_roles');
+    }
+
+    match /messages/{messageId} {
+      allow read: if activeUser() &&
+        (resource.data.expediteurId == request.auth.uid ||
+         resource.data.destinataireId == request.auth.uid);
+      allow create: if activeUser() &&
+        request.resource.data.expediteurId == request.auth.uid &&
+        request.resource.data.destinataireId is string;
+      allow update: if activeUser() &&
+        resource.data.destinataireId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lu']) &&
+        request.resource.data.lu is bool;
+      allow delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if activeUser() &&
+        (resource.data.userId == request.auth.uid || resource.data.userId == null);
+      allow create: if activeUser() && (
+        request.resource.data.userId == request.auth.uid ||
+        (request.resource.data.userId == null &&
+          (isAdmin() || hasAction('manage_stock') || hasAction('create_invoice'))) ||
+        (request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.userId is string)
+      );
+      allow update: if activeUser() &&
+        (resource.data.userId == request.auth.uid || resource.data.userId == null) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lu']) &&
+        request.resource.data.lu is bool;
+      allow delete: if activeUser() && resource.data.userId == request.auth.uid;
+    }
+
+    match /{collection}/{documentId} {
+      allow read: if activeUser() && canRead(collection);
+      allow create: if canWrite(collection);
+      allow update: if (
+        canWrite(collection) ||
+        (collection == 'products' && hasAction('create_invoice') &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock']))
+      ) &&
+        (collection != 'invoices' || hasAction('delete_invoice'));
+      allow delete: if canWrite(collection) &&
+        (collection != 'invoices' || hasAction('delete_invoice'));
+    }
+  }
+}

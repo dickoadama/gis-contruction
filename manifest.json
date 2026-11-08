@@ -1,0 +1,23 @@
+{
+  "name": "GIS Matériaux",
+  "short_name": "GIS",
+  "description": "Gestion Intégrée de Stock pour Matériaux de Construction",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0d0d0d",
+  "theme_color": "#6C63FF",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3039/3039396.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3039/3039396.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

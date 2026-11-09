@@ -52,23 +52,15 @@ const App = {
     if (!Auth.isLoggedIn()) {
       this.showLogin();
       this.updateSyncHint();
-      if (Auth._invitationPending) {
-        document.getElementById('login-error').textContent = 'Ce lien d’invitation est invalide ou expiré. Demandez une nouvelle invitation.';
-      } else {
-        try {
-          const signupOpen = await Auth.isInitialSuperAdminSignupOpen();
-          document.getElementById('first-admin-link').style.display = signupOpen ? 'block' : 'none';
-        } catch (error) {
-          console.error('[GIS] Checking initial SuperAdmin signup failed:', error);
-          document.getElementById('login-error').textContent =
-            'Impossible de vérifier la première inscription. Appliquez la migration 20261108214000_first_signup_superadmin.sql dans Supabase.';
-        }
+      try {
+        const signupOpen = await Auth.isInitialSuperAdminSignupOpen();
+        document.getElementById('first-admin-link').style.display = signupOpen ? 'block' : 'none';
+        document.getElementById('signup-link').style.display = signupOpen ? 'none' : 'block';
+      } catch (error) {
+        console.error('[GIS] Checking initial SuperAdmin signup failed:', error);
+        document.getElementById('login-error').textContent =
+          'Impossible de vérifier la première inscription. Appliquez la migration 20261108214000_first_signup_superadmin.sql dans Supabase.';
       }
-      return;
-    }
-    if (Auth._invitationPending) {
-      this.showLogin();
-      this.showLoginTab('invitation');
       return;
     }
     this.showApp();
@@ -137,13 +129,13 @@ const App = {
   showLoginTab(tab) {
     document.querySelector('.login-card')?.classList.toggle('register-active', tab === 'first-admin');
     document.getElementById('form-login').style.display = 'none';
-    document.getElementById('form-invitation').style.display = 'none';
     document.getElementById('form-forgot').style.display = 'none';
     document.getElementById('form-first-admin').style.display = 'none';
+    document.getElementById('form-signup').style.display = 'none';
 
     document.getElementById('tab-login').style.color = '#888';
     document.getElementById('tab-login').style.borderBottomColor = 'transparent';
-    const isPrivateForm = tab === 'invitation' || tab === 'first-admin';
+    const isPrivateForm = tab === 'first-admin' || tab === 'signup';
     document.getElementById('login-tabs').style.display = isPrivateForm ? 'none' : 'flex';
     document.getElementById('login-hints').style.display = isPrivateForm ? 'none' : '';
 
@@ -151,13 +143,13 @@ const App = {
       document.getElementById('form-login').style.display = 'block';
       document.getElementById('tab-login').style.color = '#6C63FF';
       document.getElementById('tab-login').style.borderBottomColor = '#6C63FF';
-    } else if (tab === 'invitation') {
-      document.getElementById('form-invitation').style.display = 'block';
     } else if (tab === 'forgot') {
       document.getElementById('form-forgot').style.display = 'block';
       // keep both tabs inactive visually
     } else if (tab === 'first-admin') {
       document.getElementById('form-first-admin').style.display = 'block';
+    } else if (tab === 'signup') {
+      document.getElementById('form-signup').style.display = 'block';
     }
   },
 
@@ -210,22 +202,18 @@ const App = {
     const data = {
       prenom: document.getElementById('first-admin-prenom').value.trim(),
       nom: document.getElementById('first-admin-nom').value.trim(),
-      username: document.getElementById('first-admin-username').value.trim().toLowerCase(),
       email: document.getElementById('first-admin-email').value.trim().toLowerCase(),
       password: document.getElementById('first-admin-password').value,
       confirmation: document.getElementById('first-admin-password-confirm').value
     };
+    data.username = Auth.generateUsername(data.prenom, data.nom);
     const errorEl = document.getElementById('first-admin-error');
     const successEl = document.getElementById('first-admin-success');
     errorEl.textContent = '';
     successEl.textContent = '';
 
-    if (!data.prenom || !data.nom || !data.email || !data.username) {
+    if (!data.prenom || !data.nom || !data.email) {
       errorEl.textContent = 'Tous les champs sont requis.';
-      return;
-    }
-    if (!/^[a-z0-9._-]{3,30}$/.test(data.username)) {
-      errorEl.textContent = 'L’identifiant doit contenir 3 à 30 caractères : lettres, chiffres, point, tiret ou souligné.';
       return;
     }
     if (data.password.length < 12 || data.password.length > 128) {
@@ -243,9 +231,10 @@ const App = {
       document.getElementById('first-admin-password-confirm').value = '';
       if (result.confirmationRequired) {
         document.getElementById('first-admin-link').style.display = 'none';
-        successEl.textContent = 'Compte créé. Confirmez votre adresse e-mail pour vous connecter en SuperAdmin.';
+        successEl.textContent = `Compte créé. Votre identifiant est ${data.username}. Confirmez votre adresse e-mail pour vous connecter en SuperAdmin.`;
         return;
       }
+      this.showToast(`Identifiant attribué : ${data.username}`, 'success');
       this.showApp();
       this.navigateToDefaultPage();
       this.startCloudSync();
@@ -255,28 +244,42 @@ const App = {
     }
   },
 
-  async handleAcceptInvitation() {
-    const password = document.getElementById('invite-password').value;
-    const confirmation = document.getElementById('invite-password-confirm').value;
-    const errorEl = document.getElementById('invitation-error');
+  async handleUserSignup() {
+    const data = {
+      prenom: document.getElementById('signup-prenom').value.trim(),
+      nom: document.getElementById('signup-nom').value.trim(),
+      email: document.getElementById('signup-email').value.trim().toLowerCase(),
+      password: document.getElementById('signup-password').value,
+      confirmation: document.getElementById('signup-password-confirm').value
+    };
+    data.username = Auth.generateUsername(data.prenom, data.nom);
+    const errorEl = document.getElementById('signup-error');
+    const successEl = document.getElementById('signup-success');
     errorEl.textContent = '';
-    if (password.length < 12 || password.length > 128) {
+    successEl.textContent = '';
+
+    if (!data.prenom || !data.nom || !data.email) {
+      errorEl.textContent = 'Tous les champs sont requis.';
+      return;
+    }
+    if (data.password.length < 12 || data.password.length > 128) {
       errorEl.textContent = 'Le mot de passe doit comporter entre 12 et 128 caractères.';
       return;
     }
-    if (password !== confirmation) {
+    if (data.password !== data.confirmation) {
       errorEl.textContent = 'Les mots de passe ne correspondent pas.';
       return;
     }
+
     try {
-      await Auth.acceptInvitation(password);
-      document.getElementById('invite-password').value = '';
-      document.getElementById('invite-password-confirm').value = '';
-      this.showApp();
-      this.navigateToDefaultPage();
-      this.startCloudSync();
+      const result = await Auth.registerPendingUser(data);
+      document.getElementById('signup-password').value = '';
+      document.getElementById('signup-password-confirm').value = '';
+      successEl.textContent = result.confirmationRequired
+        ? `Demande reçue. Identifiant attribué : ${data.username}. Confirmez votre adresse e-mail, puis attendez la validation d’un administrateur.`
+        : `Demande reçue. Identifiant attribué : ${data.username}. Attendez la validation d’un administrateur avant de vous connecter.`;
     } catch (error) {
-      console.error('[GIS] Invitation acceptance failed:', error);
+      console.error('[GIS] User signup failed:', error);
       errorEl.textContent = Auth._authError(error);
     }
   },
@@ -2297,7 +2300,7 @@ const App = {
     document.getElementById('main-content').innerHTML = `
     <div class="page-toolbar">
       <div class="toolbar-left"><button class="btn btn-outline" onclick="App.showGuideMetiers()">📖 Guide des Métiers</button></div>
-      <div class="toolbar-right">${Auth.isAdmin() ? '<button class="btn btn-primary" onclick="App.openUserModal()">+ Inviter un utilisateur</button>' : ''}</div>
+      <div class="toolbar-right">${Auth.isAdmin() ? '<button class="btn btn-primary" onclick="App.openUserModal()">+ Créer un utilisateur</button>' : ''}</div>
     </div>
     <div class="card">
       <table class="data-table">
@@ -2313,11 +2316,11 @@ const App = {
               <td><code>${u.username}</code><br><small>${u.email || ''}</small></td>
               <td><span class="badge" style="background:${ri.color}22;color:${ri.color}">${ri.icon} ${ri.label}</span></td>
               <td>${u.email || '—'}</td>
-              <td><span class="status-badge ${u.actif ? 'status-paye' : 'status-annule'}">${u.actif ? '✅ Actif' : '❌ Inactif'}</span></td>
+              <td><span class="status-badge ${u.actif ? 'status-paye' : 'status-annule'}">${u.actif ? '✅ Actif' : '⏳ À valider / inactif'}</span></td>
               <td>
                 <div class="action-btns">
                   ${Auth.isAdmin() && u.role !== 'superadmin' && (Auth.isSuperAdmin() || u.role !== 'admin') ? `<button class="btn-icon" onclick="App.openUserModal('${u.id}')">✏️</button>` : ''}
-                  ${Auth.isAdmin() && u.id !== Auth.getCurrentUser()?.id && u.role !== 'superadmin' ? `<button class="btn-icon" onclick="App.toggleUserActive('${u.id}')">${u.actif ? '🔒' : '🔓'}</button>` : ''}
+                  ${Auth.isAdmin() && u.id !== Auth.getCurrentUser()?.id && u.role !== 'superadmin' ? `<button class="btn-icon" title="${u.actif ? 'Désactiver le compte' : 'Approuver ou réactiver le compte'}" onclick="App.toggleUserActive('${u.id}')">${u.actif ? '🔒' : '🔓'}</button>` : ''}
                 </div>
               </td>
             </tr>`;
@@ -2328,13 +2331,13 @@ const App = {
 
     <div id="user-modal" class="modal-overlay" style="display:none">
       <div class="modal">
-        <div class="modal-header"><h3 id="user-modal-title">Inviter un Utilisateur</h3><button class="modal-close" onclick="App.closeModal('user-modal')">✕</button></div>
+        <div class="modal-header"><h3 id="user-modal-title">Créer un Utilisateur</h3><button class="modal-close" onclick="App.closeModal('user-modal')">✕</button></div>
         <div class="modal-body">
           <input type="hidden" id="user-edit-id">
           <div class="form-grid">
             <div class="form-group"><label>Prénom *</label><input type="text" id="usr-prenom" class="form-input"></div>
             <div class="form-group"><label>Nom *</label><input type="text" id="usr-nom" class="form-input"></div>
-            <div class="form-group"><label>Identifiant *</label><input type="text" id="usr-username" class="form-input"></div>
+            <div class="form-group" id="usr-username-group"><label>Identifiant</label><input type="text" id="usr-username" class="form-input"></div>
             <div class="form-group"><label>Rôle *</label>
               <select id="usr-role" class="form-input">
                 ${RoleManager.getAll()
@@ -2345,11 +2348,13 @@ const App = {
             </div>
             <div class="form-group"><label>Email</label><input type="email" id="usr-email" class="form-input"></div>
             <div class="form-group"><label>Téléphone</label><input type="text" id="usr-tel" class="form-input"></div>
+            <div class="form-group" id="usr-password-group"><label>Mot de passe initial *</label><input type="password" id="usr-password" class="form-input" autocomplete="new-password" minlength="12" maxlength="128"></div>
           </div>
+          <p class="text-muted" id="usr-password-hint" style="font-size:12px">Le compte sera actif immédiatement. Transmets le mot de passe à son utilisateur par un canal sécurisé.</p>
         </div>
         <div class="modal-footer">
           <button class="btn btn-outline" onclick="App.closeModal('user-modal')">Annuler</button>
-          <button class="btn btn-primary" id="user-save-button" onclick="App.saveUser()">📩 Envoyer l’invitation</button>
+          <button class="btn btn-primary" id="user-save-button" onclick="App.saveUser()">Créer le compte</button>
         </div>
       </div>
     </div>`;
@@ -2360,8 +2365,8 @@ const App = {
       this.showToast('La gestion des utilisateurs est réservée aux administrateurs.', 'error');
       return;
     }
-    document.getElementById('user-modal-title').textContent = id ? 'Modifier Utilisateur' : 'Inviter un Utilisateur';
-    document.getElementById('user-save-button').textContent = id ? '💾 Enregistrer' : '📩 Envoyer l’invitation';
+    document.getElementById('user-modal-title').textContent = id ? 'Modifier Utilisateur' : 'Créer un Utilisateur';
+    document.getElementById('user-save-button').textContent = id ? '💾 Enregistrer' : 'Créer le compte';
     document.getElementById('user-edit-id').value = id || '';
     if (id) {
       const u = DB.findById('users', id);
@@ -2377,6 +2382,10 @@ const App = {
       ['usr-prenom','usr-nom','usr-username','usr-email','usr-tel'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
       document.getElementById('usr-role').value = 'utilisateur';
     }
+    document.getElementById('usr-password').value = '';
+    document.getElementById('usr-username-group').style.display = id ? '' : 'none';
+    document.getElementById('usr-password-group').style.display = id ? 'none' : '';
+    document.getElementById('usr-password-hint').style.display = id ? 'none' : '';
     document.getElementById('user-modal').style.display = 'flex';
   },
 
@@ -2394,17 +2403,22 @@ const App = {
       email: document.getElementById('usr-email').value,
       telephone: document.getElementById('usr-tel').value
     };
-    if (!data.prenom || !data.nom || !data.username) { this.showToast('Prénom, nom et identifiant requis.', 'error'); return; }
+    if (!data.prenom || !data.nom || (editId && !data.username)) { this.showToast('Prénom et nom requis.', 'error'); return; }
     let result;
     if (editId) {
       result = await UserManager.update(editId, data);
       if (result.success !== false) { this.closeModal('user-modal'); this.showToast('Utilisateur modifié.', 'success'); this.renderUtilisateurs(); }
     } else {
       if (!data.email) { this.showToast('Une adresse e-mail est requise pour le nouveau compte.', 'error'); return; }
-      result = await UserManager.create(data);
+      const password = document.getElementById('usr-password').value;
+      if (password.length < 12 || password.length > 128) {
+        this.showToast('Le mot de passe doit comporter entre 12 et 128 caractères.', 'error');
+        return;
+      }
+      result = await UserManager.create({ ...data, password });
       if (result.success) {
         this.closeModal('user-modal');
-        this.showToast('Invitation envoyée par e-mail.', 'success');
+        this.showToast(`Compte créé (${result.user.username}). Communique le mot de passe par un canal sécurisé.`, 'success');
         this.renderUtilisateurs();
       }
     }
@@ -3044,7 +3058,7 @@ const App = {
 
     <div class="card" style="margin-top:20px">
       <div class="card-header"><h3>👑 Gestion des Administrateurs</h3>
-        <button class="btn btn-primary btn-sm" onclick="App.saCreateAdmin()">+ Inviter un Administrateur</button>
+        <button class="btn btn-primary btn-sm" onclick="App.saCreateAdmin()">+ Créer un Administrateur</button>
       </div>
       <table class="data-table">
         <thead><tr><th>Utilisateur</th><th>Identifiant</th><th>Rôle actuel</th><th>Assigner le rôle</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -3110,38 +3124,41 @@ const App = {
     modal.className = 'modal-overlay'; modal.style.display = 'flex';
     modal.innerHTML = `
       <div class="modal" style="max-width:520px">
-        <div class="modal-header"><h3>👑 Inviter un Administrateur</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+        <div class="modal-header"><h3>👑 Créer un Administrateur</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
         <div class="modal-body">
           <div class="form-grid">
             <div class="form-group"><label>Prénom *</label><input type="text" id="sa-adm-prenom" class="form-input" value="GIS"></div>
             <div class="form-group"><label>Nom *</label><input type="text" id="sa-adm-nom" class="form-input" value="Admin"></div>
-            <div class="form-group"><label>Identifiant *</label><input type="text" id="sa-adm-username" class="form-input" placeholder="ex: admin2"></div>
             <div class="form-group"><label>Adresse e-mail *</label><input type="email" id="sa-adm-email" class="form-input" placeholder="admin@exemple.com"></div>
+            <div class="form-group"><label>Mot de passe initial * (12 caractères minimum)</label><input type="password" id="sa-adm-password" class="form-input" autocomplete="new-password" minlength="12" maxlength="128"></div>
           </div>
-          <p class="text-muted" style="padding:0 14px;font-size:12px">Une invitation sera envoyée à cette adresse. L’administrateur choisira son mot de passe à l’activation du compte.</p>
+          <p class="text-muted" style="padding:0 14px;font-size:12px">Le compte sera actif immédiatement. Transmets le mot de passe à son utilisateur par un canal sécurisé.</p>
         </div>
         <div class="modal-footer">
           <button class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Annuler</button>
-          <button class="btn btn-primary" onclick="App.saCreateAdminSave(this.closest('.modal-overlay'))">👑 Envoyer l’invitation</button>
+          <button class="btn btn-primary" onclick="App.saCreateAdminSave(this.closest('.modal-overlay'))">👑 Créer le compte</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
-    setTimeout(() => document.getElementById('sa-adm-username')?.focus(), 60);
+    setTimeout(() => document.getElementById('sa-adm-email')?.focus(), 60);
   },
 
   async saCreateAdminSave(modalEl) {
     if (!Auth.isSuperAdmin()) return;
     const prenom = document.getElementById('sa-adm-prenom').value.trim() || 'GIS';
     const nom = document.getElementById('sa-adm-nom').value.trim() || 'Admin';
-    const username = document.getElementById('sa-adm-username').value.trim();
     const email = document.getElementById('sa-adm-email').value.trim();
-    if (!username || !email) { this.showToast('Identifiant et adresse e-mail requis.', 'error'); return; }
+    const password = document.getElementById('sa-adm-password').value;
+    if (!email || password.length < 12 || password.length > 128) {
+      this.showToast('Adresse e-mail et mot de passe valide requis.', 'error');
+      return;
+    }
     const result = await UserManager.create({
-      prenom, nom, username, email, role: 'admin'
+      prenom, nom, email, password, role: 'admin'
     });
     if (!result.success) { this.showToast(result.error, 'error'); return; }
     modalEl.remove();
-    this.showToast('Invitation administrateur envoyée par e-mail.', 'success');
+    this.showToast(`Compte administrateur créé (${result.user.username}). Communique le mot de passe par un canal sécurisé.`, 'success');
     this.renderSuperAdmin();
   },
 

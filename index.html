@@ -57,20 +57,6 @@
       <button class="login-btn" onclick="App.handleLogin()">🔐 &nbsp; Se connecter</button>
     </div>
 
-    <div id="form-invitation" class="login-form" style="display:none;">
-      <p style="font-size:13px;color:#aaa;margin-bottom:15px">Votre compte a été invité par un administrateur. Choisissez un mot de passe pour activer votre accès.</p>
-      <div class="form-group">
-        <label>Nouveau mot de passe (12 caractères minimum)</label>
-        <input type="password" id="invite-password" class="login-input" autocomplete="new-password">
-      </div>
-      <div class="form-group">
-        <label>Confirmer le mot de passe</label>
-        <input type="password" id="invite-password-confirm" class="login-input" autocomplete="new-password">
-      </div>
-      <div id="invitation-error" class="login-error"></div>
-      <button class="login-btn" onclick="App.handleAcceptInvitation()">✅ &nbsp; Activer mon compte</button>
-    </div>
-
     <!-- FORGOT PASSWORD FORM -->
     <div id="form-forgot" class="login-form" style="display:none;">
       <p style="font-size:13px; color:#aaa; margin-bottom:15px;">Entrez l'adresse e-mail associée au compte. Si elle est enregistrée, vous recevrez un lien sécurisé pour choisir un nouveau mot de passe.</p>
@@ -84,8 +70,40 @@
       </div>
     </div>
 
+    <div id="form-signup" class="login-form" style="display:none;">
+      <p class="login-form-intro">Créez votre compte. Un administrateur devra l’approuver avant votre première connexion.</p>
+      <div class="first-admin-fields">
+        <div class="form-group">
+          <label for="signup-prenom">Prénom</label>
+          <input type="text" id="signup-prenom" class="login-input" autocomplete="given-name" required>
+        </div>
+        <div class="form-group">
+          <label for="signup-nom">Nom</label>
+          <input type="text" id="signup-nom" class="login-input" autocomplete="family-name" required>
+        </div>
+        <div class="form-group first-admin-full">
+          <label for="signup-email">Adresse e-mail</label>
+          <input type="email" id="signup-email" class="login-input" autocomplete="email" required>
+        </div>
+        <div class="form-group">
+          <label for="signup-password">Mot de passe (12 min.)</label>
+          <input type="password" id="signup-password" class="login-input" autocomplete="new-password" required>
+        </div>
+        <div class="form-group">
+          <label for="signup-password-confirm">Confirmation</label>
+          <input type="password" id="signup-password-confirm" class="login-input" autocomplete="new-password" required>
+        </div>
+      </div>
+      <div id="signup-error" class="login-error" aria-live="polite"></div>
+      <div id="signup-success" class="login-success" aria-live="polite"></div>
+      <button class="login-btn" onclick="App.handleUserSignup()">Envoyer ma demande</button>
+      <div class="login-form-back">
+        <a href="#" onclick="App.showLoginTab('login');return false">⬅ Retour à la connexion</a>
+      </div>
+    </div>
+
     <div id="form-first-admin" class="login-form" style="display:none;">
-      <p class="login-form-intro">Premier compte SuperAdmin. Les suivants seront invités.</p>
+      <p class="login-form-intro">Premier compte SuperAdmin. Ensuite, les utilisateurs peuvent demander l’accès à l’application.</p>
       <div class="first-admin-fields">
         <div class="form-group">
           <label for="first-admin-prenom">Prénom</label>
@@ -94,10 +112,6 @@
         <div class="form-group">
           <label for="first-admin-nom">Nom</label>
           <input type="text" id="first-admin-nom" class="login-input" autocomplete="family-name" required>
-        </div>
-        <div class="form-group first-admin-full">
-          <label for="first-admin-username">Identifiant</label>
-          <input type="text" id="first-admin-username" class="login-input" autocomplete="username" required>
         </div>
         <div class="form-group first-admin-full">
           <label for="first-admin-email">Adresse e-mail</label>
@@ -121,8 +135,9 @@
     </div>
 
     <div id="login-hints" class="login-hints" style="margin-top:20px;">
-      <p id="login-hint-text">Le premier compte devient SuperAdmin; les comptes suivants sont sur invitation.</p>
+      <p id="login-hint-text">Le premier compte devient SuperAdmin; ensuite, les utilisateurs peuvent demander l’accès à l’application.</p>
       <a id="first-admin-link" href="#" style="display:none" onclick="App.showLoginTab('first-admin');return false">Créer le premier compte SuperAdmin</a>
+      <a id="signup-link" href="#" style="display:none" onclick="App.showLoginTab('signup');return false">Créer un compte et demander l’accès</a>
     </div>
 
     <!-- Indicateur de synchronisation cloud (discret, ne bloque jamais) -->

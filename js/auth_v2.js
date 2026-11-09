@@ -60,9 +60,24 @@ async function invokeAdmin(action, payload = {}) {
   return data;
 }
 
+function generateUsername(prenom, nom) {
+  const normalized = `${prenom}.${nom}`
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '');
+  const base = normalized.slice(0, 17).replace(/\.+$/g, '') || 'user';
+  const suffix = Array.from(crypto.getRandomValues(new Uint8Array(6)), value => value.toString(16).padStart(2, '0')).join('');
+  return `${base}.${suffix}`;
+}
+
 const Auth = {
   _currentUser: null,
-  _invitationPending: false,
+
+  generateUsername(prenom, nom) {
+    return generateUsername(prenom, nom);
+  },
 
   async isInitialSuperAdminSignupOpen() {
     const { data, error } = await supabaseClient.rpc('is_initial_superadmin_signup_open');
@@ -95,17 +110,36 @@ const Auth = {
       if (!user || user.role !== 'superadmin') {
         const { error: signOutError } = await supabaseClient.auth.signOut();
         if (signOutError) throw signOutError;
-        throw new Error('Le premier compte a déjà été créé. Demandez une invitation.');
+        throw new Error('Le premier compte a déjà été créé. Contactez un administrateur.');
       }
     }
 
     return { confirmationRequired: !data.session };
   },
 
+  async registerPendingUser(profile) {
+    const { data, error } = await supabaseClient.auth.signUp({
+      email: profile.email,
+      password: profile.password,
+      options: {
+        emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
+        data: {
+          prenom: profile.prenom,
+          nom: profile.nom,
+          username: profile.username
+        }
+      }
+    });
+    if (error) throw error;
+    if (!data.user) throw new Error('Supabase n’a pas retourné la demande de compte.');
+    if (data.session) {
+      const { error: signOutError } = await supabaseClient.auth.signOut();
+      if (signOutError) throw signOutError;
+    }
+    return { confirmationRequired: !data.session };
+  },
+
   async restoreSession() {
-    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-    const queryParams = new URLSearchParams(window.location.search);
-    this._invitationPending = hashParams.get('type') === 'invite' || queryParams.get('type') === 'invite';
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) throw error;
     const user = data.session?.user;
@@ -138,20 +172,6 @@ const Auth = {
       if (signOutError) console.error('[GIS] Could not clear failed sign-in session:', signOutError);
       return { success: false, error: this._authError(error) };
     }
-  },
-
-  async acceptInvitation(password) {
-    if (!this._invitationPending || !this._currentUser) {
-      throw new Error('Le lien d’invitation est invalide ou expiré.');
-    }
-    const { error } = await supabaseClient.auth.updateUser({ password });
-    if (error) throw error;
-    this._invitationPending = false;
-    const cleanUrl = new URL(window.location.href);
-    cleanUrl.hash = '';
-    cleanUrl.searchParams.delete('type');
-    cleanUrl.searchParams.delete('code');
-    window.history.replaceState(window.history.state, '', cleanUrl.toString());
   },
 
   async sendPasswordReset(email) {
@@ -340,19 +360,22 @@ const UserManager = {
   async create(data) {
     if (!Auth.isAdmin()) return { success: false, error: 'Accès refusé.' };
     try {
-      const result = await invokeAdmin('invite_user', {
+      const username = data.username || generateUsername(data.prenom, data.nom);
+      const result = await invokeAdmin('create_user', {
         prenom: data.prenom,
         nom: data.nom,
-        username: data.username,
+        username,
         email: data.email,
+        password: data.password,
         telephone: data.telephone || '',
-        role: data.role || 'utilisateur',
-        redirectTo: `${window.location.origin}${window.location.pathname}`
+        role: data.role || 'utilisateur'
       });
-      return { success: true, user: { id: result.user.id, ...data, actif: true } };
+      const safeData = { ...data, username };
+      delete safeData.password;
+      return { success: true, user: { id: result.user.id, ...safeData, actif: true } };
     } catch (error) {
       console.error('[GIS] User provisioning failed:', error);
-      return { success: false, error: error.message || 'Impossible d’envoyer l’invitation.' };
+      return { success: false, error: error.message || 'Impossible de créer le compte.' };
     }
   },
 

@@ -62,28 +62,6 @@ function roleId(role: string) {
   return role.startsWith('ROLE_') ? role : `ROLE_${role}`;
 }
 
-function getInvitationRedirect(redirectTo: unknown, origin: string | null) {
-  if (!origin || typeof redirectTo !== 'string') {
-    throw new RequestError(400, 'Adresse de retour de l’invitation invalide.');
-  }
-  try {
-    const requestOrigin = new URL(origin);
-    const redirectUrl = new URL(redirectTo);
-    const isLocalHttp = requestOrigin.protocol === 'http:'
-      && ['localhost', '127.0.0.1'].includes(requestOrigin.hostname);
-    if (
-      redirectUrl.origin !== requestOrigin.origin
-      || (requestOrigin.protocol !== 'https:' && !isLocalHttp)
-    ) {
-      throw new RequestError(400, 'Adresse de retour de l’invitation non autorisée.');
-    }
-    return redirectUrl.toString();
-  } catch (error) {
-    if (error instanceof RequestError) throw error;
-    throw new RequestError(400, 'Adresse de retour de l’invitation invalide.');
-  }
-}
-
 async function getCaller(request: Request) {
   const token = request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
   if (!token) throw new RequestError(401, 'Connexion requise.');
@@ -116,9 +94,13 @@ async function requireRoleExists(role: string) {
   if (!data) throw new RequestError(400, 'Rôle introuvable.');
 }
 
-async function createUser(data: Record<string, unknown>, callerRole: string, origin: string | null) {
+async function createUser(data: Record<string, unknown>, callerRole: string) {
   requireAdmin(callerRole);
   const profile = requireProfile(data);
+  const password = String(data.password || '');
+  if (password.length < 12 || password.length > 128) {
+    throw new RequestError(400, 'Le mot de passe doit comporter entre 12 et 128 caractères.');
+  }
   const requestedRole = String(data.role || 'utilisateur');
   const role = normalizeRole(requestedRole);
   if (role === 'superadmin') throw new RequestError(403, 'Le rôle SuperAdmin ne peut pas être attribué.');
@@ -127,17 +109,19 @@ async function createUser(data: Record<string, unknown>, callerRole: string, ori
   }
   await requireRoleExists(role);
 
-  const redirectTo = getInvitationRedirect(data.redirectTo, origin);
-  const { data: invited, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(profile.email, {
-    redirectTo,
-    data: {
+  const { data: created, error: createError } = await adminClient.auth.admin.createUser({
+    email: profile.email,
+    password,
+    email_confirm: true,
+    user_metadata: {
       prenom: profile.prenom,
       nom: profile.nom,
       username: profile.username
-    }
+    },
+    app_metadata: { gis_created_by_admin: true }
   });
-  if (inviteError) throw inviteError;
-  if (!invited.user) throw new Error('Supabase n’a pas retourné le compte invité.');
+  if (createError) throw createError;
+  if (!created.user) throw new Error('Supabase n’a pas retourné le compte créé.');
 
   const { data: savedProfile, error: saveError } = await adminClient
     .from('profiles')
@@ -146,12 +130,12 @@ async function createUser(data: Record<string, unknown>, callerRole: string, ori
       role,
       actif: true
     })
-    .eq('id', invited.user.id)
+    .eq('id', created.user.id)
     .select('*')
     .single();
   if (saveError) {
-    const { error: deleteError } = await adminClient.auth.admin.deleteUser(invited.user.id);
-    if (deleteError) console.error('Invitation cleanup failed:', deleteError);
+    const { error: deleteError } = await adminClient.auth.admin.deleteUser(created.user.id);
+    if (deleteError) console.error('Account cleanup failed:', deleteError);
     throw saveError;
   }
   return { user: savedProfile };
@@ -315,8 +299,8 @@ Deno.serve(async request => {
 
     const { authUser, profile } = await getCaller(request);
     switch (action) {
-      case 'invite_user':
-        return respond(await createUser(body, profile.role, request.headers.get('origin')));
+      case 'create_user':
+        return respond(await createUser(body, profile.role));
       case 'update_user':
         return respond(await updateUser(body, authUser.id, profile.role));
       case 'set_user_active':
